@@ -87,13 +87,13 @@ pip install -r requirements.txt
 
 The package includes three Jupyter notebooks for different analysis scenarios:
 
-1. **dca_analysis.ipynb**: Main analysis notebook for working with database connections. This notebook:
+1. **dcaAnalysis.ipynb**: Main analysis notebook for working with database connections. This notebook:
    - Connects to a database source
    - Performs DCA analysis on specified wells
    - Generates visualizations and summary reports
    - Supports customization of analysis parameters
 
-2. **dca_analysis_csv.ipynb**: Analysis notebook for working with CSV data files. This notebook:
+2. **dcaAnalysisCSV.ipynb**: Analysis notebook for working with CSV data files. This notebook:
    - Works with extracted well data in CSV format
    - Performs the same analysis as the database version
    - Includes data integrity verification
