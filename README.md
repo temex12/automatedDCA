@@ -9,7 +9,6 @@ A comprehensive Python package for automated Decline Curve Analysis (DCA) of oil
   - Hyperbolic decline
   - Harmonic decline
   - Exponential decline
-  - Combined decline (hybrid model)
 - **Flexible Data Sources**:
   - Direct database connection
   - CSV file-based analysis
