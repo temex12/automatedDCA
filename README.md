@@ -74,7 +74,7 @@ automatedDCA/
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/yourusername/automatedDCA.git
+git clone https://github.com/temex12/automatedDCA.git
 cd automatedDCA
 ```
 
