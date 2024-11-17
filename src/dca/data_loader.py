@@ -1,3 +1,33 @@
+"""
+Data Loader Module for Decline Curve Analysis (DCA)
+
+This module provides flexible data loading capabilities for DCA analysis, supporting both:
+1. Direct database connections (SQL databases)
+2. File-based data access (CSV files in a structured directory)
+
+Key Features:
+- Automatic source type detection and initialization
+- Comprehensive data validation
+- Production and well information loading
+- Data export capabilities
+- Data integrity verification
+- Metadata generation and management
+
+Directory Structure (for file-based access):
+automatedDCA/
+└── data/
+    ├── well_1234/
+    │   ├── production.csv  (production time series)
+    │   ├── info.csv       (well characteristics)
+    │   └── metadata.txt   (data statistics and info)
+    └── well_5678/
+        └── ...
+
+Required Data Columns:
+- Production Data: ZONE_PROD_PERIOD, GAS_PRODUCTION_E3M3
+- Well Info: WA, HZ_FLAG
+"""
+
 from pathlib import Path
 import pandas as pd
 from sqlalchemy import create_engine, inspect
@@ -5,25 +35,35 @@ from typing import Union, Optional, Tuple, List
 import warnings
 
 class DCADataLoader:
-    """
-    Data loader class that handles both database and extracted data sources for DCA analysis.
-    Supports seamless switching between database and file-based data access.
-    """
     def __init__(self, data_source: Union[str, Path]):
         """
-        Initialize the data loader.
+        Initialize the data loader with either database connection or file path.
         
         Args:
             data_source: Either a database connection string (e.g., "mysql+pymysql://user:pass@localhost/db")
-                        or path to extracted data directory
+                      or path to extracted data directory containing well_* subdirectories
+                      
+        Raises:
+            ConnectionError: If database connection fails
+            FileNotFoundError: If data directory or required files are missing
         """
         self.data_source = data_source
         self._initialize_source()
     
     def _initialize_source(self):
-        """Initialize the appropriate data source."""
+        """
+        Initialize and validate the data source.
+        
+        Detects source type (database/files) and performs initial validation:
+        - For database: Tests connection
+        - For files: Verifies directory structure and required files
+        
+        Raises:
+            ConnectionError: If database connection fails
+            FileNotFoundError: If directory structure is invalid
+        """
         if isinstance(self.data_source, str) and "://" in self.data_source:
-            # Database connection
+            # Handle database connection initialization
             self.source_type = "database"
             try:
                 self.engine = create_engine(self.data_source)
@@ -34,18 +74,18 @@ class DCADataLoader:
             except Exception as e:
                 raise ConnectionError(f"Failed to connect to database: {str(e)}")
         else:
-            # File system
+            # Handle file system initialization
             self.source_type = "files"
             self.data_dir = Path(self.data_source)
             if not self.data_dir.exists():
                 raise FileNotFoundError(f"Data directory not found: {self.data_dir}")
             
-            # Verify directory structure
+            # Verify well directories exist
             well_dirs = list(self.data_dir.glob('well_*'))
             if not well_dirs:
                 raise FileNotFoundError(f"No well directories found in {self.data_dir}")
             
-            # Check first well directory for required files
+            # Validate required files in first well directory
             first_well = well_dirs[0]
             required_files = ['production.csv', 'info.csv']
             for file in required_files:
@@ -57,22 +97,24 @@ class DCADataLoader:
     
     def validate_well_data(self, production_data: pd.DataFrame, well_info: pd.DataFrame) -> None:
         """
-        Validate the structure of loaded data.
+        Validate the structure and required columns of well data.
         
         Args:
-            production_data: Production data DataFrame
-            well_info: Well info DataFrame
+            production_data: DataFrame containing production time series
+                Required columns: ZONE_PROD_PERIOD, GAS_PRODUCTION_E3M3
+            well_info: DataFrame containing well characteristics
+                Required columns: WA, HZ_FLAG
             
         Raises:
-            ValueError: If required columns are missing
+            ValueError: If any required columns are missing
         """
-        # Check required columns in production data
+        # Validate production data columns
         required_prod_columns = ['ZONE_PROD_PERIOD', 'GAS_PRODUCTION_E3M3']
         missing_prod = [col for col in required_prod_columns if col not in production_data.columns]
         if missing_prod:
             raise ValueError(f"Missing required columns in production data: {missing_prod}")
         
-        # Check required columns in well info
+        # Validate well info columns
         required_info_columns = ['WA', 'HZ_FLAG']
         missing_info = [col for col in required_info_columns if col not in well_info.columns]
         if missing_info:
@@ -80,15 +122,20 @@ class DCADataLoader:
     
     def get_well_list(self) -> List[int]:
         """
-        Get list of available wells.
+        Retrieve list of all available well authorization numbers.
         
         Returns:
-            List of well authorization numbers
+            List of unique well authorization numbers (integers)
+            
+        Raises:
+            ValueError: If no wells are found in the data source
         """
         if self.source_type == "database":
+            # Query unique well numbers from database
             query = "SELECT DISTINCT WELL_AUTHORIZATION_NUMBER FROM bc_total_production"
             return pd.read_sql_query(query, self.engine)['WELL_AUTHORIZATION_NUMBER'].tolist()
         else:
+            # Extract well numbers from directory names
             wells = [int(d.name.split('_')[1]) for d in self.data_dir.glob('well_*')]
             if not wells:
                 raise ValueError("No wells found in data directory")
@@ -96,17 +143,24 @@ class DCADataLoader:
     
     def load_well_data(self, well_number: int) -> Tuple[pd.DataFrame, pd.DataFrame]:
         """
-        Load production and well info data for a specific well.
+        Load complete production and well information for a specific well.
         
         Args:
-            well_number: Well authorization number
+            well_number: Well authorization number to load
             
         Returns:
-            Tuple of (production_data, well_info) DataFrames
+            Tuple containing:
+            - production_data: DataFrame with production time series
+            - well_info: DataFrame with well characteristics
+            
+        Raises:
+            FileNotFoundError: If well data is not found
+            ValueError: If data files are empty or malformed
+            Exception: For other loading errors
         """
         try:
             if self.source_type == "database":
-                # Database queries
+                # Load from database using SQL queries
                 production_query = f"""
                 SELECT 
                     ZONE_PROD_PERIOD,
@@ -136,7 +190,7 @@ class DCADataLoader:
                 well_info = pd.read_sql_query(well_info_query, self.engine)
                 
             else:
-                # File system
+                # Load from CSV files
                 well_dir = self.data_dir / f'well_{well_number}'
                 if not well_dir.exists():
                     raise FileNotFoundError(f"Data not found for well {well_number}")
@@ -152,13 +206,13 @@ class DCADataLoader:
             # Validate data structure
             self.validate_well_data(production_data, well_info)
             
-            # Ensure date column is datetime
+            # Convert date column to datetime type
             production_data['ZONE_PROD_PERIOD'] = pd.to_datetime(production_data['ZONE_PROD_PERIOD'])
             
-            # Sort production data by date
+            # Ensure chronological order
             production_data = production_data.sort_values('ZONE_PROD_PERIOD')
             
-            # Check for missing values
+            # Check for data quality issues
             if production_data['GAS_PRODUCTION_E3M3'].isna().any():
                 warnings.warn(f"Found missing production values for well {well_number}")
             
@@ -169,13 +223,14 @@ class DCADataLoader:
     
     def get_metadata(self, well_number: int) -> Optional[str]:
         """
-        Get metadata for a specific well (only available for extracted data).
+        Retrieve metadata for a specific well from metadata.txt file.
+        Only available for file-based data source.
         
         Args:
             well_number: Well authorization number
             
         Returns:
-            Metadata string if available, None otherwise
+            String containing metadata if available, None otherwise
         """
         if self.source_type == "files":
             metadata_path = self.data_dir / f'well_{well_number}' / 'metadata.txt'
@@ -185,11 +240,21 @@ class DCADataLoader:
     
     def export_data(self, well_list: List[int], output_dir: Union[str, Path]):
         """
-        Export data from database to file system (only available for database source).
+        Export well data from database to CSV files.
+        Only available when using database as data source.
+        
+        Creates a directory structure with:
+        - One subdirectory per well
+        - production.csv and info.csv files
+        - metadata.txt containing data summaries
+        - export_summary.csv tracking export status
         
         Args:
             well_list: List of well numbers to export
-            output_dir: Directory to save exported data
+            output_dir: Directory where exported data will be saved
+            
+        Raises:
+            ValueError: If not using database source
         """
         if self.source_type != "database":
             raise ValueError("Export is only available when using database source")
@@ -200,17 +265,18 @@ class DCADataLoader:
         results = []
         for well_number in well_list:
             try:
+                # Load well data
                 production_data, well_info = self.load_well_data(well_number)
                 
                 # Create well directory
                 well_dir = output_dir / f'well_{well_number}'
                 well_dir.mkdir(exist_ok=True)
                 
-                # Save data
+                # Save CSV files
                 production_data.to_csv(well_dir / 'production.csv', index=False)
                 well_info.to_csv(well_dir / 'info.csv', index=False)
                 
-                # Create metadata
+                # Generate metadata
                 self._create_metadata(well_dir, production_data, well_info)
                 
                 print(f"Successfully exported data for well {well_number}")
@@ -225,7 +291,19 @@ class DCADataLoader:
     
     def _create_metadata(self, well_dir: Path, production_data: pd.DataFrame, 
                         well_info: pd.DataFrame):
-        """Create metadata file for exported data."""
+        """
+        Generate metadata file containing data summaries and statistics.
+        
+        Creates a metadata.txt file with:
+        - Production data information and memory usage
+        - Well information details
+        - Production data statistical summary
+        
+        Args:
+            well_dir: Directory where metadata file will be saved
+            production_data: Production time series DataFrame
+            well_info: Well characteristics DataFrame
+        """
         with open(well_dir / 'metadata.txt', 'w') as f:
             f.write("Production Data Information:\n")
             f.write("-" * 50 + "\n")
@@ -239,11 +317,24 @@ class DCADataLoader:
             
     def verify_data_integrity(self) -> pd.DataFrame:
         """
-        Verify the integrity of all well data in the directory.
+        Verify integrity of all well data files.
         Only available for file-based data source.
         
+        Checks:
+        - Presence of required files
+        - Data loading capability
+        - Basic data validity
+        
         Returns:
-            DataFrame containing verification results
+            DataFrame containing verification results for each well:
+            - well_number: Well authorization number
+            - status: 'valid' or 'invalid'
+            - production_rows: Number of production records (if valid)
+            - date_range: Production date range (if valid)
+            - error: Error message (if invalid)
+            
+        Raises:
+            ValueError: If not using file-based source
         """
         if self.source_type != "files":
             raise ValueError("Data integrity verification only available for file-based data source")

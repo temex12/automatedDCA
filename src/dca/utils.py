@@ -1,46 +1,94 @@
 """
-Utility classes for Decline Curve Analysis (DCA).
-Contains metrics calculation and data preprocessing functionality.
+Utility Classes for Decline Curve Analysis (DCA)
+
+This module provides essential utility functions for DCA calculations and data preprocessing:
+
+1. MetricsCalculator:
+   - Error metrics calculation (SMAPE)
+   - Decline rate calculations
+   - Rate smoothing functions
+
+2. DataPreprocessor:
+   - Production data cleaning
+   - Outlier removal
+   - Data normalization
+   - Switch time detection for terminal decline
+
+Key Features:
+- Robust error metric calculations
+- Automated data cleaning and preprocessing
+- Terminal decline detection algorithms
+
+Notes:
+- All calculations handle edge cases and invalid data
+- Methods are designed for production time series analysis
+- Supports both conventional and unconventional well analysis
 """
+
 import numpy as np
 import pandas as pd
 
 
 class MetricsCalculator:
     """
-    Class containing static methods for calculating various DCA-related metrics.
+    Utility class for calculating DCA-related metrics and error measurements.
+    
+    Features:
+    - Symmetric Mean Absolute Percentage Error (SMAPE) calculation
+    - Instantaneous decline rate calculations
+    - Time series smoothing functions
+    
+    All methods are implemented as static methods for easy access.
     """
     
     @staticmethod
     def symmetric_mean_absolute_percentage_error(y_true, y_pred):
         """
-        Calculate the symmetric mean absolute percentage error between true and predicted values.
+        Calculate Symmetric Mean Absolute Percentage Error (SMAPE).
+        
+        SMAPE is preferred over MAPE because it:
+        - Handles zero and near-zero values better
+        - Treats over and under predictions more fairly
+        - Has a bounded range of 0-100%
         
         Args:
-            y_true (array-like): True values
-            y_pred (array-like): Predicted values
+            y_true (array-like): Actual production values
+            y_pred (array-like): Model predicted values
             
         Returns:
-            float: Symmetric MAPE value as a percentage
+            float: SMAPE value as percentage (0-100%)
+            
+        Notes:
+            - More robust than traditional MAPE
+            - Symmetric around zero
+            - Less biased for small values
         """
         return 100 * np.mean(2 * np.abs(y_pred - y_true) / (np.abs(y_true) + np.abs(y_pred)))
     
     @staticmethod
     def calculate_decline_rate(best_func, t1, q1, best_params):
         """
-        Calculate instantaneous decline rate at time t1.
+        Calculate instantaneous nominal decline rate at a specific time.
         
         Args:
-            best_func (callable): The decline curve function (hyperbolic, harmonic, or exponential)
-            t1 (float): Time point at which to calculate decline rate
+            best_func (callable): Decline curve function (hyperbolic, harmonic, exponential)
+            t1 (float): Time point for calculation (years)
             q1 (float): Production rate at time t1
-            best_params (tuple): Parameters of the decline curve function
+            best_params (tuple): Model parameters (varies by model type):
+                - Hyperbolic: (qi, di, b)
+                - Harmonic: (qi, di)
+                - Exponential: (qi, di)
             
         Returns:
-            float: Absolute decline rate at time t1
+            float: Absolute decline rate (fraction per year)
             
         Raises:
-            ValueError: If the function type is not supported
+            ValueError: If model type is not supported
+            
+        Notes:
+            - Hyperbolic: D(t) = di / (1 + b * di * t)
+            - Harmonic: D(t) = di / (1 + di * t)
+            - Exponential: D(t) = di (constant)
         """
         if best_func.__name__ == 'hyperbolic':
             qi, di, b = best_params
@@ -58,14 +106,19 @@ class MetricsCalculator:
     @staticmethod
     def smooth_decline_rates(decline_rates, window=3):
         """
-        Apply smoothing to decline rates using rolling average.
+        Smooth decline rates using centered moving average.
         
         Args:
-            decline_rates (array-like): Array of decline rates
-            window (int): Size of the smoothing window
+            decline_rates (array-like): Raw decline rate values
+            window (int): Smoothing window size (odd number recommended)
             
         Returns:
             numpy.ndarray: Smoothed decline rates
+            
+        Notes:
+            - Uses centered moving average
+            - Handles edges using forward/backward fill
+            - Reduces noise while preserving trends
         """
         return pd.Series(decline_rates).rolling(
             window=window, 
@@ -75,40 +128,53 @@ class MetricsCalculator:
 
 class DataPreprocessor:
     """
-    Class containing static methods for preprocessing production data.
+    Utility class for preprocessing production data before DCA analysis.
+    
+    Features:
+    - Outlier detection and removal
+    - Production rate normalization
+    - Terminal decline detection
+    - Data validation and cleaning
+    
+    All methods are implemented as static methods for easy use.
     """
     
     @staticmethod
     def preprocess_data(data):
         """
-        Preprocess production data by removing outliers and normalizing production rates.
+        Clean and normalize production data for analysis.
         
         Args:
-            data (pd.DataFrame): DataFrame containing production data with 'GAS_PRODUCTION_RATE' column
+            data (pd.DataFrame): Raw production data with 'GAS_PRODUCTION_RATE' column
             
         Returns:
-            pd.DataFrame: Preprocessed DataFrame with outliers removed and normalized production rates
+            pd.DataFrame: Cleaned DataFrame with additional columns:
+                - GAS_PRODUCTION_RATE_NORMALIZED: Production rates scaled to [0,1]
             
         Notes:
-            - Removes data points with production rate <= 0.01
-            - Removes outliers using 1.5 * IQR method
-            - Adds 'GAS_PRODUCTION_RATE_NORMALIZED' column with normalized production rates
+            Data Cleaning Steps:
+            1. Remove negligible rates (≤ 0.01)
+            2. Remove statistical outliers using 1.5 * IQR method
+            3. Normalize remaining rates to maximum value
+            
+        The IQR (Interquartile Range) method is robust to extreme values and
+        effective for production data which often contains anomalies.
         """
-        # Remove very low production rates
+        # Remove negligible production rates
         data = data[data['GAS_PRODUCTION_RATE'] > 0.01].copy()
         
-        # Calculate IQR bounds
+        # Calculate outlier bounds using IQR method
         Q1 = data['GAS_PRODUCTION_RATE'].quantile(0.25)
         Q3 = data['GAS_PRODUCTION_RATE'].quantile(0.75)
         IQR = Q3 - Q1
         lower_bound = Q1 - 1.5 * IQR
         upper_bound = Q3 + 1.5 * IQR
         
-        # Remove outliers
+        # Remove statistical outliers
         data = data[(data['GAS_PRODUCTION_RATE'] >= lower_bound) & 
                    (data['GAS_PRODUCTION_RATE'] <= upper_bound)]
         
-        # Normalize production rates
+        # Normalize to maximum rate
         max_production = data['GAS_PRODUCTION_RATE'].max()
         data['GAS_PRODUCTION_RATE_NORMALIZED'] = data['GAS_PRODUCTION_RATE'] / max_production
         
@@ -119,25 +185,40 @@ class DataPreprocessor:
                         min_switch_time=2, max_switch_time=10, validation_period=1, 
                         smoothing_window=3):
         """
-        Find the time point where decline rate drops below threshold with additional constraints.
+        Determine optimal time to switch from hyperbolic to terminal decline.
+        
+        This method identifies when the decline rate stabilizes below a threshold,
+        indicating transition to terminal decline phase.
         
         Args:
-            forecast_data (pd.DataFrame): DataFrame with forecast data
-            best_func (callable): Best fitting decline function
-            t_forecast (array-like): Time array for forecast
-            best_params (tuple): Parameters of the best fitting function
-            decline_threshold (float): Threshold for switching to exponential
-            min_switch_time (int): Minimum years before allowing switch (default: 2)
-            max_switch_time (int): Maximum years to enforce switch (default: 10)
-            validation_period (float): Years to validate sustained decline below threshold (default: 1)
-            smoothing_window (int): Window size for decline rate smoothing (default: 3)
+            forecast_data (pd.DataFrame): Production forecast data
+            best_func (callable): Best-fit decline function
+            t_forecast (array-like): Time points for forecast
+            best_params (tuple): Parameters of best-fit model
+            decline_threshold (float): Terminal decline rate threshold
+            min_switch_time (int): Minimum years before considering switch
+            max_switch_time (int): Maximum years before forcing switch
+            validation_period (float): Years of sustained decline required
+            smoothing_window (int): Window for decline rate smoothing
         
         Returns:
-            float: Switch time in years
+            float: Optimal switch time in years
+            
+        Algorithm Steps:
+        1. Calculate decline rates along forecast
+        2. Smooth rates to reduce noise
+        3. Find sustained decline below threshold
+        4. Validate for specified period
+        5. Apply min/max constraints
+        
+        Notes:
+        - Important for unconventional wells
+        - Prevents unrealistic late-time forecasts
+        - Considers both technical and economic factors
         """
         metrics_calc = MetricsCalculator()
         
-        # Calculate decline rates
+        # Calculate instantaneous decline rates
         decline_rates = forecast_data.apply(
             lambda row: metrics_calc.calculate_decline_rate(
                 best_func,
@@ -148,18 +229,18 @@ class DataPreprocessor:
             axis=1
         ).values
         
-        # Apply smoothing to decline rates
+        # Smooth decline rates to reduce noise
         smooth_rates = metrics_calc.smooth_decline_rates(decline_rates, window=smoothing_window)
         forecast_data['Decline_Rate'] = smooth_rates
         
-        # Filter data based on minimum switch time
+        # Apply minimum time constraint
         valid_data = forecast_data[forecast_data['Years'] >= min_switch_time]
         
-        # Find points below threshold
+        # Find periods below threshold
         below_threshold = valid_data[valid_data['Decline_Rate'] <= decline_threshold]
         
         if len(below_threshold) > 0:
-            # Check for sustained decline below threshold
+            # Look for sustained decline below threshold
             potential_switches = []
             current_run_start = None
             
@@ -171,8 +252,9 @@ class DataPreprocessor:
                     break
                 
             if potential_switches:
+                # Return earliest valid switch time within constraints
                 switch_time = min(potential_switches[0], max_switch_time)
                 return switch_time
         
-        # If no valid switch point found, return max_switch_time
+        # Default to maximum switch time if no valid point found
         return max_switch_time

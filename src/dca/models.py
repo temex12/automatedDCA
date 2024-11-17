@@ -1,6 +1,29 @@
 """
-Decline Curve Analysis (DCA) model implementations.
-Contains various decline curve equations and their derivatives.
+Decline Curve Analysis (DCA) Models Module
+
+This module implements various decline curve models used in oil and gas production analysis.
+It provides mathematical models for:
+1. Hyperbolic decline (most general form)
+2. Harmonic decline (special case where b=1)
+3. Exponential decline (special case where b=0)
+4. Combined decline (hybrid model for terminal decline)
+
+Key Features:
+- Standard decline curve equations
+- First derivatives for decline rate calculations
+- Model fitting utilities
+- Hybrid model for terminal decline behavior
+
+Mathematical Background:
+- Hyperbolic: q(t) = qi / (1 + b * di * t)^(1/b)
+- Harmonic: q(t) = qi / (1 + di * t)
+- Exponential: q(t) = qi * exp(-di * t)
+
+Where:
+- q(t) = production rate at time t
+- qi = initial production rate
+- di = initial decline rate
+- b = hyperbolic exponent (0 ≤ b ≤ 1)
 """
 
 import numpy as np
@@ -10,170 +33,200 @@ from typing import Tuple, Union, Callable
 
 class DeclineModels:
     """
-    Static class containing implementations of various decline curve models.
+    Implementation of decline curve models for production forecasting.
     
-    Includes:
-    - Hyperbolic decline
-    - Harmonic decline
-    - Exponential decline
-    - Combined decline (hybrid model)
-    - Model fitting utilities
+    This class provides:
+    1. Basic decline curve models (hyperbolic, harmonic, exponential)
+    2. First derivatives for decline rate calculations
+    3. Combined/hybrid models for terminal decline
+    4. Utility methods for model fitting and analysis
+    
+    All methods are implemented as static methods for easy access without instantiation.
     """
     
     @staticmethod
     def hyperbolic(t, qi, di, b):
         """
-        Hyperbolic decline curve model.
+        Hyperbolic decline curve model - most general form of decline.
         
         Args:
-            t (array-like): Time values
+            t (array-like): Time values in years from start of analysis
             qi (float): Initial production rate
-            di (float): Initial decline rate
+            di (float): Initial decline rate (nominal annual decline rate)
             b (float): Hyperbolic exponent (0 < b < 1)
+                      b=0 reduces to exponential
+                      b=1 reduces to harmonic
             
         Returns:
-            array-like: Production rates at times t
+            array-like: Production rates at specified times
             
         Notes:
-            The hyperbolic decline equation is:
-            q(t) = qi / (1 + b * di * t)^(1/b)
+            - Most common model for unconventional wells
+            - b typically ranges from 0.3 to 1.5
+            - Higher b values indicate slower decline
+            - Requires careful terminal decline consideration
         """
         return qi / (np.abs((1 + b * di * t))**(1/b))
     
     @staticmethod
     def harmonic(t, qi, di):
         """
-        Harmonic decline curve model (special case of hyperbolic where b=1).
+        Harmonic decline curve model (hyperbolic with b=1).
         
         Args:
-            t (array-like): Time values
+            t (array-like): Time values in years
             qi (float): Initial production rate
             di (float): Initial decline rate
             
         Returns:
-            array-like: Production rates at times t
+            array-like: Production rates at specified times
             
         Notes:
-            The harmonic decline equation is:
-            q(t) = qi / (1 + di * t)
+            - Special case of hyperbolic decline
+            - Most conservative decline model
+            - May overestimate reserves in many cases
+            - Often seen in gas wells with significant pressure support
         """
         return qi / (1 + di * t)
     
     @staticmethod
     def exponential(t, qi, di):
         """
-        Exponential decline curve model (special case of hyperbolic where b=0).
+        Exponential decline curve model (hyperbolic with b=0).
         
         Args:
-            t (array-like): Time values
+            t (array-like): Time values in years
             qi (float): Initial production rate
-            di (float): Decline rate (constant)
+            di (float): Constant decline rate
             
         Returns:
-            array-like: Production rates at times t
+            array-like: Production rates at specified times
             
         Notes:
-            The exponential decline equation is:
-            q(t) = qi * exp(-di * t)
+            - Constant percentage decline rate
+            - Most conservative decline model
+            - Common in conventional wells
+            - Semi-log plot appears as straight line
         """
         return qi * np.exp(-di * t)
     
     @staticmethod
     def hyperbolic_derivative(t, qi, di, b):
         """
-        First derivative of the hyperbolic decline curve.
-        Used for calculating instantaneous decline rates.
+        First derivative of hyperbolic decline curve.
         
         Args:
-            t (array-like): Time values
+            t (array-like): Time values in years
             qi (float): Initial production rate
             di (float): Initial decline rate
             b (float): Hyperbolic exponent
             
         Returns:
-            array-like: Rate of change of production at times t
+            array-like: Instantaneous rate of change of production
+            
+        Notes:
+            - Used for calculating instantaneous decline rates
+            - Important for decline rate transitions
+            - Helps identify changes in decline behavior
         """
         return -(qi * di * (1 + b * di * t)**(-1 - 1/b))
     
     @staticmethod
     def harmonic_derivative(t, qi, di):
         """
-        First derivative of the harmonic decline curve.
+        First derivative of harmonic decline curve.
         
         Args:
-            t (array-like): Time values
+            t (array-like): Time values in years
             qi (float): Initial production rate
             di (float): Initial decline rate
             
         Returns:
-            array-like: Rate of change of production at times t
+            array-like: Rate of change of production
+            
+        Notes:
+            - Special case of hyperbolic derivative (b=1)
+            - Used for decline rate calculations
+            - Important for transition analysis
         """
         return -(qi * di) / (1 + di * t)**2
     
     @staticmethod
     def exponential_derivative(t, qi, di):
         """
-        First derivative of the exponential decline curve.
+        First derivative of exponential decline curve.
         
         Args:
-            t (array-like): Time values
+            t (array-like): Time values in years
             qi (float): Initial production rate
             di (float): Decline rate
             
         Returns:
-            array-like: Rate of change of production at times t
+            array-like: Rate of change of production
+            
+        Notes:
+            - Constant percentage decline
+            - Simplest derivative form
+            - Used for constant terminal decline
         """
         return -qi * di * np.exp(-di * t)
     
     @staticmethod
     def combined_decline_c1(t, qi, di, b, switch_time):
         """
-        Combined decline curve model (hyperbolic transitioning to exponential).
+        Combined decline model - transitions from hyperbolic to exponential.
         
         Args:
-            t (array-like): Time values
+            t (array-like): Time values in years
             qi (float): Initial production rate
             di (float): Initial decline rate
             b (float): Hyperbolic exponent
             switch_time (float): Time to switch from hyperbolic to exponential
             
         Returns:
-            array-like: Production rates at times t
+            array-like: Production rates incorporating regime change
             
         Notes:
-            - Uses hyperbolic decline until switch_time
-            - Transitions to exponential decline after switch_time
-            - Maintains continuity of rate and decline rate at switch point
+            - Models transition to terminal decline
+            - Maintains continuity at switch point
+            - Common in unconventional wells
+            - Prevents unrealistic long-term forecasts
         """
-        # Calculate hyperbolic decline
+        # Calculate initial hyperbolic decline
         hyp_decline = DeclineModels.hyperbolic(t, qi, di, b)
         
-        # Calculate rate at switch point
+        # Get rate at switch point for continuity
         exp_start_rate = np.interp(switch_time, t, hyp_decline)
         
-        # Calculate decline rate at switch point
+        # Calculate matching exponential decline rate
         hyp_slope_at_switch = DeclineModels.hyperbolic_derivative(switch_time, qi, di, b)
-        di_exp = -hyp_slope_at_switch / exp_start_rate
+        di_exp = -hyp_slope_at_switch / exp_start_rate  # Terminal decline rate
         
-        # Calculate exponential decline after switch
+        # Calculate exponential segment
         exp_decline = DeclineModels.exponential(t - switch_time, exp_start_rate, di_exp)
         
-        # Combine the curves
+        # Combine curves at switch point
         return np.where(t < switch_time, hyp_decline, exp_decline)
 
     @classmethod
     def get_model_function(cls, model_type: str) -> Tuple[Callable, tuple]:
         """
-        Get the model function and default bounds for a given model type.
+        Get model function and appropriate parameter bounds.
         
         Args:
-            model_type (str): Type of model ('hyperbolic', 'harmonic', or 'exponential')
+            model_type: Name of decline model ('hyperbolic', 'harmonic', 'exponential')
             
         Returns:
-            tuple: (model_function, default_bounds)
+            tuple: (model_function, parameter_bounds)
             
         Raises:
-            ValueError: If model_type is not supported
+            ValueError: For unsupported model types
+            
+        Notes:
+            Default bounds ensure physically meaningful parameters:
+            - Production rates (qi) ≥ 0
+            - Decline rates (di) ≥ 0
+            - Hyperbolic exponent (b) between 0 and 1
         """
         if model_type == 'hyperbolic':
             return cls.hyperbolic, ((0, 0, 0), (np.inf, np.inf, 1))
@@ -187,34 +240,41 @@ class DeclineModels:
     @classmethod
     def fit_model(cls, t, q, model_type='hyperbolic', bounds=None, **kwargs):
         """
-        Fit a decline curve model to production data.
+        Fit decline curve model to production data.
         
         Args:
-            t (array-like): Time values
-            q (array-like): Production rate values
-            model_type (str): Type of model to fit ('hyperbolic', 'harmonic', or 'exponential')
-            bounds (tuple): Bounds for curve fitting parameters
-            **kwargs: Additional arguments to pass to curve_fit
+            t: Time values in years
+            q: Production rate values
+            model_type: Type of model to fit
+            bounds: Optional parameter bounds
+            **kwargs: Additional arguments for scipy.optimize.curve_fit
             
         Returns:
-            tuple: Best fit parameters for the specified model
+            tuple: Best fit parameters for specified model
             
         Raises:
-            ValueError: If model_type is not supported
-            RuntimeError: If curve fitting fails
+            ValueError: For invalid inputs or fitting failures
+            RuntimeError: If curve fitting fails to converge
+            
+        Notes:
+            - Uses scipy's curve_fit with robust defaults
+            - Handles common fitting issues
+            - Returns optimal parameters for forecasting
         """
         try:
+            # Get model function and default bounds
             model_func, default_bounds = cls.get_model_function(model_type)
             bounds = bounds or default_bounds
             
-            # Ensure data is numpy array
+            # Ensure numpy arrays
             t = np.asarray(t)
             q = np.asarray(q)
             
-            # Add default kwargs for curve_fit
-            kwargs.setdefault('maxfev', 5000)
-            kwargs.setdefault('method', 'trf')
+            # Set robust default fitting parameters
+            kwargs.setdefault('maxfev', 5000)  # Maximum function evaluations
+            kwargs.setdefault('method', 'trf')  # Trust Region Reflective algorithm
             
+            # Perform the fit
             params, _ = curve_fit(model_func, t, q, bounds=bounds, **kwargs)
             return params
             
@@ -226,16 +286,21 @@ class DeclineModels:
     @classmethod
     def get_derivative_function(cls, model_type: str) -> Callable:
         """
-        Get the derivative function for a given model type.
+        Get derivative function for decline rate calculations.
         
         Args:
-            model_type (str): Type of model ('hyperbolic', 'harmonic', or 'exponential')
+            model_type: Name of decline model
             
         Returns:
-            callable: Derivative function for the specified model
+            callable: Corresponding derivative function
             
         Raises:
-            ValueError: If model_type is not supported
+            ValueError: For unsupported model types
+            
+        Notes:
+            - Used for decline rate analysis
+            - Important for transition point calculations
+            - Helps validate model behavior
         """
         if model_type == 'hyperbolic':
             return cls.hyperbolic_derivative

@@ -17,10 +17,12 @@ A comprehensive Python package for automated Decline Curve Analysis (DCA) of oil
   - Production forecasts in normal and log scales
   - Error analysis plots
   - Data coverage analysis
+  - Error metrics heatmap
 - **Well Type Detection**:
   - Automatic differentiation between conventional and unconventional wells
   - Customized analysis parameters based on well type
 - **Comprehensive Error Metrics**:
+  - MSE (Mean Squared Error)
   - MAE (Mean Absolute Error)
   - RMSE (Root Mean Square Error)
   - MAPE (Mean Absolute Percentage Error)
@@ -59,6 +61,7 @@ automatedDCA/
 │   ├── error_analysis/       # Error analysis plots
 │   ├── model_distribution.png
 │   ├── well_type_distribution.png
+│   ├── error_metrics_heatmap.png
 │   ├── dca_analysis_summary.csv
 │   └── dca_analysis_summary.xlsx
 │
@@ -107,16 +110,17 @@ Key parameters that can be adjusted in the notebooks:
 - `max_error`: Maximum acceptable error (default: 0.1)
 - `error_tolerance_factor`: Factor for error tolerance calculation (default: 0.5)
 - `trend_window`: Window size for trend analysis (default: 5)
+- `mse_scale_factor`: Scale factor for MSE visualization (default: 1e3)
 
 ### Error Analysis Methodology
 
-The error vs data coverage analysis primarily uses Mean Squared Error (MSE) as the main metric, scaled by a factor (default: 1e3) for visualization purposes. The analysis:
+The error vs data coverage analysis uses multiple error metrics, with MSE and RMSE as the primary metrics for optimization. The MSE is scaled by a factor (default: 1e3) for visualization purposes. The analysis:
 
-1. Calculates MSE for different data coverage periods
-2. Identifies the global minimum error point
+1. Calculates multiple error metrics (MSE, MAE, RMSE, MAPE, SMAPE) for different data coverage periods
+2. Identifies the global minimum error point using MSE
 3. Applies an error tolerance line based on the relative slope
 4. Selects the optimal cutoff point that balances:
-   - Minimizing error (MSE)
+   - Minimizing error (primarily MSE)
    - Maximizing data coverage
    - Maintaining error within tolerance of the global minimum
 
@@ -129,10 +133,12 @@ The analysis generates the following output files in the `results` directory:
 - `error_analysis/`: Error analysis plots showing MSE vs data coverage
 - `model_distribution.png`: Distribution of best-fitting models
 - `well_type_distribution.png`: Distribution of well types
+- `error_metrics_heatmap.png`: Heatmap visualization of normalized error metrics
 - `dca_analysis_summary.csv`: Summary of analysis results
 - `dca_analysis_summary.xlsx`: Excel version of the summary with multiple sheets:
   - Full Summary: Complete analysis results
   - Error Statistics: Statistical breakdown of error metrics
+  - Error Ranges: Min, max, range, and median for each error metric
 
 ## Data Requirements
 
@@ -154,3 +160,5 @@ Required files in each well directory:
 - `info.csv`:
   - WA
   - HZ_FLAG
+
+The analysis supports both database connections and CSV files, with identical functionality and outputs regardless of the data source used. The CSV-based approach is particularly useful for offline analysis or when database access is restricted.

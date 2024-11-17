@@ -1,3 +1,26 @@
+"""
+Decline Curve Analysis (DCA) Visualization Module
+
+This module provides comprehensive visualization capabilities for DCA results, including:
+1. Production rate plots (normal and log scale)
+2. Error analysis visualization
+3. Data coverage analysis plots
+
+Key Features:
+- Automated plot generation and saving
+- Consistent styling and formatting
+- Support for both normal and log-scale visualization
+- Error analysis with tolerance lines
+- Customizable output formats and directories
+
+Output Structure:
+results/
+├── normal_scale/      # Linear scale production plots
+├── log_scale/        # Logarithmic scale production plots
+└── error_analysis/   # Error vs coverage analysis plots
+
+"""
+
 import os
 import numpy as np
 import pandas as pd
@@ -7,36 +30,55 @@ import matplotlib.dates as mdates
 
 class DCAVisualizer:
     """
-    Class for visualizing Decline Curve Analysis (DCA) results.
-    Handles creation of error analysis and production forecast plots.
+    Visualization manager for Decline Curve Analysis results.
+    
+    Features:
+    - Production rate visualization
+    - Error analysis plots
+    - Consistent styling across plots
+    - Automated file management
+    
     """
     
     def __init__(self, output_dir="results"):
         """
-        Initialize DCA Visualizer with output directory structure.
+        Initialize visualization manager with output directory structure.
         
         Args:
-            output_dir (str): Base directory for saving output files
+            output_dir (str): Base directory for saving plots
+                            Will create if doesn't exist
+                            
+        Directory Structure Created:
+        - {output_dir}/normal_scale/
+        - {output_dir}/log_scale/
+        - {output_dir}/error_analysis/
         """
         self.output_dir = output_dir
         self._create_output_directories()
         
-        # Set default plotting style
-        plt.style.use('seaborn')
-        self.default_figsize = (16, 8)
-        self.dpi = 300
+        # Set default plotting parameters
+        plt.style.use('seaborn')  # Clean, modern style
+        self.default_figsize = (16, 8)  # Widescreen format
+        self.dpi = 300  # High resolution output
     
     def _create_output_directories(self):
-        """Create necessary output directories if they don't exist."""
+        """
+        Create directory structure for output files.
+        Creates directories if they don't exist.
+        """
         for subdir in ["normal_scale", "log_scale", "error_analysis"]:
             os.makedirs(os.path.join(self.output_dir, subdir), exist_ok=True)
     
     def _save_figure(self, filepath):
         """
-        Helper method to save figures with consistent settings.
+        Save figure with consistent settings and error handling.
         
         Args:
-            filepath (str): Path where the figure should be saved
+            filepath (str): Full path for saving figure
+            
+        Notes:
+            - Includes tight bounding box
+            - Closes figure after saving
         """
         try:
             plt.savefig(filepath, dpi=self.dpi, bbox_inches='tight')
@@ -48,60 +90,75 @@ class DCAVisualizer:
     def plot_error_vs_data_coverage(self, results, best_coverage, best_error, 
                                   relative_slope, well_number, scale_factor=1e3):
         """
-        Plot error vs data coverage analysis.
+        Create error analysis plot showing error vs data coverage relationship.
+        
+        This plot helps visualize the trade-off between:
+        - Model error (accuracy of fit)
+        - Data coverage (amount of data used)
         
         Args:
-            results (list): List of dictionaries containing analysis results
-            best_coverage (float): Coverage value for chosen point
-            best_error (float): Error value for chosen point
+            results (list): Analysis results containing:
+                - start_date: Analysis start date
+                - error: Model error value
+                - data_coverage: Fraction of data used
+            best_coverage (float): Coverage at chosen analysis point
+            best_error (float): Error at chosen analysis point
             relative_slope (float): Slope of error tolerance line
-            well_number (int): Well authorization number
-            scale_factor (float): Scale factor for error values
+            well_number (int): Well identification number
+            scale_factor (float): Factor for scaling error values
+            
+        Plot Elements:
+        - Error vs coverage curve
+        - Error tolerance line
+        - Global minimum point
+        - Chosen operating point
+        - Year labels for key points
         """
         try:
             plt.figure(figsize=self.default_figsize)
+            
+            # Extract plot data
             dates = [r['start_date'] for r in results]
             errors = [r['error'] * scale_factor for r in results]
             coverages = [r['data_coverage'] for r in results]
             
-            # Plot combined results with coverage vs error
+            # Plot main curve
             plt.plot(coverages, errors, 'b-o', label='Error vs Coverage', markersize=5)
             
-            # Find global minimum
+            # Calculate and plot global minimum
             global_min_index = np.argmin(errors)
             global_min_coverage = coverages[global_min_index]
             global_min_error = errors[global_min_index]
             max_coverage = max(coverages)
             
-            # Plot error tolerance line
+            # Add error tolerance line
             tolerance_line_x = [global_min_coverage, max_coverage]
             tolerance_line_y = [global_min_error, 
                               global_min_error + (relative_slope * scale_factor) * (max_coverage - global_min_coverage)]
             plt.plot(tolerance_line_x, tolerance_line_y, 'g--', label='Error Tolerance Line')
             
-            # Highlight points
+            # Highlight key points
             plt.plot(best_coverage, best_error * scale_factor, marker='s', color='green', 
                     markersize=10, label='Chosen Point')
             plt.plot(global_min_coverage, global_min_error, marker='*', color='black', 
                     markersize=12, label='Global Minimum')
             
-            # Add labels with offsets
+            # Add annotations
             self._add_annotations(best_coverage, best_error, scale_factor, 
                                 global_min_coverage, global_min_error)
             
-            # Set labels and title
+            # Style and format plot
             plt.xlabel('Data Coverage')
             plt.ylabel(f'MSE Error (x {scale_factor:,.0f})')
-            plt.title(f'Error vs Data Coverage - Well {well_number}')
+            plt.title(f'Error vs Data Coverage Analysis - Well {well_number}')
             plt.grid(True)
             plt.legend()
             
-            # Format x-axis as percentage
+            # Format axes
             plt.gca().xaxis.set_major_formatter(mtick.PercentFormatter(1.0))
-            
-            # Add year labels
             self._add_year_labels(coverages, errors, dates)
             
+            # Save plot
             plt.tight_layout()
             filepath = os.path.join(self.output_dir, "error_analysis", 
                                   f"well_{well_number}_error_analysis.png")
@@ -113,7 +170,18 @@ class DCAVisualizer:
     
     def _add_annotations(self, best_coverage, best_error, scale_factor, 
                         global_min_coverage, global_min_error):
-        """Helper method to add annotations to error analysis plot."""
+        """
+        Add text annotations to error analysis plot.
+        
+        Annotations:
+        - CP: Chosen Point
+        - GM: Global Minimum
+        
+        Features:
+        - Offset text boxes
+        - Arrow connectors
+        - Semi-transparent backgrounds
+        """
         plt.annotate('CP', (best_coverage, best_error * scale_factor),
                     xytext=(5, 5), textcoords='offset points',
                     bbox=dict(boxstyle="round", fc="w", ec="0.5", alpha=0.9),
@@ -124,9 +192,21 @@ class DCAVisualizer:
                     arrowprops=dict(arrowstyle="->"))
     
     def _add_year_labels(self, coverages, errors, dates):
-        """Helper method to add year labels to error analysis plot."""
+        """
+        Add year labels to data points on error analysis plot.
+        
+        Args:
+            coverages: Coverage values for each point
+            errors: Error values for each point
+            dates: Corresponding dates
+            
+        Notes:
+            - Labels added every third point to avoid crowding
+            - 30-degree rotation for better readability
+            - Offset positioning to avoid overlap
+        """
         for i, (coverage, error, date) in enumerate(zip(coverages, errors, dates)):
-            if i % 3 == 0:  # Adjust density of labels
+            if i % 3 == 0:  # Add label every third point
                 plt.annotate(date.strftime('%Y'), (coverage, error), 
                            textcoords="offset points", xytext=(0, 10), 
                            ha='center', va='bottom', color='black', 
@@ -135,18 +215,29 @@ class DCAVisualizer:
     def save_dca_plots(self, production_data, forecast_df, well_number, 
                       best_start_date, economic_limit_daily):
         """
-        Save normal and log-scale DCA plots.
+        Generate and save production rate plots in both normal and log scales.
+        
+        Creates two visualizations for each well:
+        1. Normal (linear) scale plot
+        2. Log scale plot
         
         Args:
-            production_data (pd.DataFrame): Historical production data
-            forecast_df (pd.DataFrame): Forecast data
-            well_number (int): Well authorization number
-            best_start_date (datetime): Start date for DCA analysis
-            economic_limit_daily (float): Economic limit for production
+            production_data: Historical production data DataFrame
+            forecast_df: Forecast production DataFrame
+            well_number: Well identification number
+            best_start_date: Optimal DCA analysis start date
+            economic_limit_daily: Economic production rate limit
+            
+        Plot Elements:
+        - Historical production data points
+        - DCA model fit
+        - Production forecast
+        - Economic limit line
+        - Analysis start date line
         """
         last_data_date = production_data['ZONE_PROD_PERIOD'].max()
         
-        # Create normal scale plot
+        # Create linear scale plot
         self._create_production_plot(
             production_data, forecast_df, well_number, best_start_date,
             economic_limit_daily, last_data_date, log_scale=False
@@ -161,18 +252,36 @@ class DCAVisualizer:
     def _create_production_plot(self, production_data, forecast_df, well_number,
                               best_start_date, economic_limit_daily, last_data_date,
                               log_scale=False):
-        """Helper method to create production plots."""
+        """
+        Create production rate visualization with specified scale.
+        
+        Args:
+            production_data: Historical production data
+            forecast_df: Forecast production data
+            well_number: Well identification number
+            best_start_date: DCA analysis start date
+            economic_limit_daily: Economic production limit
+            last_data_date: End date of historical data
+            log_scale (bool): Whether to use logarithmic y-axis
+            
+        Plot Components:
+        - Historical data points (blue scatter)
+        - DCA model fit (red line)
+        - Production forecast (green dashed line)
+        - Economic limit (black dashed line)
+        - Analysis start date (green vertical line)
+        """
         plt.figure(figsize=(16, 8))
         
-        # Filter data for log scale if needed
+        # Handle data for log scale
         if log_scale:
             production_data = production_data[production_data['GAS_PRODUCTION_RATE'] > 0]
         
-        # Plot historical data
+        # Plot historical data points
         plt.scatter(production_data['ZONE_PROD_PERIOD'], production_data['GAS_PRODUCTION_RATE'],
                    color='blue', label='Historical Data', alpha=0.6, s=40)
         
-        # Plot DCA fit and forecast
+        # Split and plot DCA fit and forecast
         mask_fit = forecast_df['Date'] <= last_data_date
         mask_forecast = forecast_df['Date'] > last_data_date
         
@@ -185,7 +294,7 @@ class DCAVisualizer:
         plt.axhline(y=economic_limit_daily, color='black', linestyle='--', label='Economic Limit')
         plt.axvline(x=best_start_date, color='green', linestyle='--', linewidth=2, label='DCA Start Date')
         
-        # Set axis properties
+        # Configure axis properties
         if log_scale:
             plt.yscale('log')
             y_min = max(production_data['GAS_PRODUCTION_RATE'].min(), 0.1)
@@ -198,7 +307,7 @@ class DCAVisualizer:
             plot_type = "normal"
             title_suffix = ""
         
-        # Set x-axis limits and format
+        # Set x-axis range and format
         x_min = production_data['ZONE_PROD_PERIOD'].min()
         plt.xlim(left=x_min, right=pd.Timestamp('2060-01-01'))
         plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%Y'))
@@ -211,7 +320,7 @@ class DCAVisualizer:
         plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
         plt.grid(True, alpha=0.3, which='both' if log_scale else 'major')
         
-        # Adjust layout and save
+        # Adjust layout and save plot
         plt.tight_layout()
         plt.subplots_adjust(top=0.95, right=0.85)
         
