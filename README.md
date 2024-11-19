@@ -12,7 +12,7 @@ A comprehensive Python package for automated Decline Curve Analysis (DCA) of oil
 - **Flexible Data Sources**:
   - Direct database connection
   - CSV file-based analysis
-- **Advanced Visualization**:
+- **Visualization**:
   - Production forecasts in normal and log scales
   - Error analysis plots
   - Data coverage analysis
