@@ -1,5 +1,5 @@
 # Python
-__pycache__/
+**pycache**/
 *.py[cod]
 *$py.class
 *.so
@@ -43,3 +43,28 @@ ENV/
 
 # Logs
 *.log
+
+# Generated files and directories
+results/*
+!results/dca_parameters.csv
+
+# Images and data files
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.pdf
+*.xlsx
+*.xls
+*.csv
+!dca_parameters.csv
+
+# Data directories
+data/*
+!data/README.md
+
+# Temp files
+*.tmp
+*.temp
+*.swp
+.DS_Store
