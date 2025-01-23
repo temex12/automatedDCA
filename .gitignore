@@ -61,7 +61,8 @@ results/*
 
 # Data directories
 data/*
-!data/README.md
+!data/
+!data/**
 
 # Temp files
 *.tmp
