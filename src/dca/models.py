@@ -260,6 +260,9 @@ class DeclineModels:
             - Uses scipy's curve_fit with robust defaults
             - Handles common fitting issues
             - Returns optimal parameters for forecasting
+            - For hyperbolic decline, b parameter is rounded to nearest 0.01
+            - When rounded b ≈ 0, treats as exponential decline
+            - When rounded b ≈ 1, treats as harmonic decline
         """
         try:
             # Get model function and default bounds
@@ -276,6 +279,21 @@ class DeclineModels:
             
             # Perform the fit
             params, _ = curve_fit(model_func, t, q, bounds=bounds, **kwargs)
+            
+            # Handle b parameter rounding for hyperbolic model
+            if model_type == 'hyperbolic':
+                qi, di, b = params
+                b_rounded = round(b, 2)  # Round to nearest 0.01
+                
+                # If b is very close to 0 (rounded to 0), treat as exponential
+                if b_rounded == 0:
+                    return (qi, di, 0.0)  # Force exactly 0 for exponential
+                # If b is very close to 1 (rounded to 1), treat as harmonic
+                elif b_rounded == 1:
+                    return (qi, di, 1.0)  # Force exactly 1 for harmonic
+                else:
+                    return (qi, di, b_rounded)
+            
             return params
             
         except RuntimeError as e:
