@@ -153,18 +153,27 @@ class DCAAnalyzer:
             
         Returns:
             tuple: (best_start_date, results, relative_slope, best_coverage, best_error)
-                - best_start_date: Optimal date to begin DCA analysis
-                - results: List of analysis results for different time windows
-                - relative_slope: Slope of the error tolerance line
-                - best_coverage: Fraction of data included in the best fit
-                - best_error: Model error at the best fit point
         """
         production_data = production_data.sort_values('ZONE_PROD_PERIOD')
-        end_date = production_data['ZONE_PROD_PERIOD'].max()
-        start_date = production_data['ZONE_PROD_PERIOD'].min()
-        total_years = (end_date - start_date).days / 365.25
         
+        # Drop rows with missing dates to ensure valid calculations
+        production_data = production_data.dropna(subset=['ZONE_PROD_PERIOD'])
+        if production_data.empty:
+            raise ValueError("Production data is empty or has no valid 'ZONE_PROD_PERIOD' values.")
+        
+        start_date = production_data['ZONE_PROD_PERIOD'].min()
+        end_date = production_data['ZONE_PROD_PERIOD'].max()
+        
+        if pd.isnull(start_date) or pd.isnull(end_date):
+            raise ValueError("Missing start or end date in production data.")
+        
+        total_years = (end_date - start_date).days / 365.25
+        if np.isnan(total_years) or total_years <= 0:
+            raise ValueError("Invalid total years calculated from production data.")
+        
+        # Ensure that max_years is set correctly
         max_years = min(int(total_years), max_years)
+        
         results = []
         
         # Test different time windows
@@ -184,15 +193,15 @@ class DCAAnalyzer:
             try:
                 models = {
                     'Hyperbolic': (self.models.hyperbolic, 
-                                 curve_fit(self.models.hyperbolic, t, q, 
-                                         bounds=((0, 0, 0), (np.inf, np.inf, 1)), 
-                                         maxfev=5000, method='trf')[0]),
+                                curve_fit(self.models.hyperbolic, t, q, 
+                                            bounds=((0, 0, 0), (np.inf, np.inf, 1)), 
+                                            maxfev=5000, method='trf')[0]),
                     'Harmonic': (self.models.harmonic, 
-                               curve_fit(self.models.harmonic, t, q, 
-                                       maxfev=5000, method='trf')[0]),
+                                curve_fit(self.models.harmonic, t, q, 
+                                        maxfev=5000, method='trf')[0]),
                     'Exponential': (self.models.exponential, 
-                                  curve_fit(self.models.exponential, t, q, 
-                                          maxfev=5000, method='trf')[0])
+                                    curve_fit(self.models.exponential, t, q, 
+                                            maxfev=5000, method='trf')[0])
                 }
                 
                 # Calculate errors for each model
@@ -230,7 +239,7 @@ class DCAAnalyzer:
         return best_start_date, results, relative_slope, best_coverage, best_error
 
     def perform_dca_analysis(self, well_authorization_number, min_coverage=0.3, max_error=0.1, 
-                        error_tolerance_factor=0.1, trend_window=5, mse_scale_factor=1e3):
+                            error_tolerance_factor=0.1, trend_window=5, mse_scale_factor=1e3):
         """
         Performs comprehensive Decline Curve Analysis for a given well.
         
@@ -299,8 +308,8 @@ class DCAAnalyzer:
         days_in_period = 91.25 if self.time_period == 'Q' else 30.44
         production_data['GAS_PRODUCTION_RATE'] = production_data['GAS_PRODUCTION_E3M3'] / days_in_period
         production_data['Years'] = (production_data['ZONE_PROD_PERIOD'] - 
-                                production_data['ZONE_PROD_PERIOD'].min()).dt.days / 365.25
-        
+                                    production_data['ZONE_PROD_PERIOD'].min()).dt.days / 365.25
+
         # Find optimal analysis start date
         best_start_date, change_detection_results, relative_slope, best_coverage, best_error = \
             self.year_based_automated_change_detection(
@@ -309,7 +318,7 @@ class DCAAnalyzer:
                 error_tolerance_factor=error_tolerance_factor,
                 trend_window=trend_window
             )
-        
+
         # Visualize error vs coverage analysis
         self.visualizer.plot_error_vs_data_coverage(
             change_detection_results, best_coverage, best_error,
@@ -348,13 +357,11 @@ class DCAAnalyzer:
         for name, (func, params) in models.items():
             y_pred = func(t, *params)
             mae = mean_absolute_error(q, y_pred)
-            # mse = mean_squared_error(q, y_pred) 
             rmse = np.sqrt(mean_squared_error(q, y_pred)) 
             mape = mean_absolute_percentage_error(q, y_pred)
             smape = self.metrics.symmetric_mean_absolute_percentage_error(q, y_pred)
             results[name] = {
                 'MAE': mae,
-                # 'MSE': mse, 
                 'RMSE': rmse,
                 'MAPE': mape,
                 'SMAPE': smape
@@ -416,8 +423,11 @@ class DCAAnalyzer:
             'GAS_PRODUCTION_RATE': forecast
         })
 
-        # Define economic limit
-        economic_limit_daily = 2.4  # e3m3 per day (typical regulatory/economic threshold)
+        # Define economic limit based on well type
+        if is_unconventional:
+            economic_limit_daily = 2.8  # e3m3 per day for unconventional wells
+        else:
+            economic_limit_daily = 1.4  # e3m3 per day for conventional wells
 
         # Generate and save visualization plots
         self.visualizer.save_dca_plots(production_data, forecast_df, well_authorization_number, 
@@ -430,9 +440,8 @@ class DCAAnalyzer:
 
         # Calculate error metrics for the entire dataset
         full_forecast = best_func(complete_data['Years'], *best_params) * \
-                    complete_data['GAS_PRODUCTION_RATE'].max()
+                        complete_data['GAS_PRODUCTION_RATE'].max()
         full_mae = mean_absolute_error(complete_data['GAS_PRODUCTION_RATE'], full_forecast)
-        # full_mse = mean_squared_error(complete_data['GAS_PRODUCTION_RATE'], full_forecast) 
         full_rmse = np.sqrt(mean_squared_error(complete_data['GAS_PRODUCTION_RATE'], full_forecast))
         full_mape = mean_absolute_percentage_error(complete_data['GAS_PRODUCTION_RATE'], full_forecast)
         full_smape = self.metrics.symmetric_mean_absolute_percentage_error(
@@ -452,7 +461,6 @@ class DCAAnalyzer:
             'days_in_period': days_in_period,
             'best_start_date': best_start_date,
             'full_mae': full_mae,
-            # 'full_mse': full_mse,
             'full_rmse': full_rmse,
             'full_mape': full_mape,
             'full_smape': full_smape,
@@ -524,7 +532,7 @@ class DCAAnalyzer:
             
             parameter_summary.update({
                 'transition_start_date': (pd.to_datetime(best_start_date) + 
-                                        pd.Timedelta(days=int(switch_time * 365.25))),
+                                            pd.Timedelta(days=int(switch_time * 365.25))),
                 'q_transition': exp_start_rate_denorm,  # Using actual interpolated transition rate
                 'd_transition': di_exp,  # Using calculated exponential decline rate
                 't_transition': transition_time  # Time from transition until economic limit/end

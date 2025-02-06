@@ -290,8 +290,16 @@ class DCAVisualizer:
         plt.plot(forecast_df[mask_forecast]['Date'], forecast_df[mask_forecast]['GAS_PRODUCTION_RATE'],
                 color='green', linestyle='--', label='DCA Forecast', linewidth=2)
         
-        # Add reference lines
-        plt.axhline(y=economic_limit_daily, color='black', linestyle='--', label='Economic Limit')
+        # Add economic limit line with updated label and annotation
+        plt.axhline(y=economic_limit_daily, color='black', linestyle='--', 
+                   label=f'Economic Limit: {economic_limit_daily} E3M3/day')
+        
+        # # Add text annotation for economic limit
+        # x_pos = production_data['ZONE_PROD_PERIOD'].min()
+        # plt.text(x_pos, economic_limit_daily * 1.05, f'{economic_limit_daily} E3M3/day',
+        #         color='black', fontsize=10, fontweight='bold')
+        
+        # Add analysis start date line
         plt.axvline(x=best_start_date, color='green', linestyle='--', linewidth=2, label='DCA Start Date')
         
         # Configure axis properties
