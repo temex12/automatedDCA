@@ -28,6 +28,30 @@ from .utils import MetricsCalculator, DataPreprocessor
 from .visualization import DCAVisualizer
 from .data_loader import DCADataLoader
 
+def calculate_remaining_reserves(forecast_rates, days_in_period, time_step, economic_limit_daily):
+    """
+    Calculate remaining reserves by integrating forecast rates over the actual time step.
+
+    This method converts each forecast rate (in e3m3/day) into volume over the
+    corresponding time interval (days_in_period * time_step). It then sums only
+    the volumes for points where the rate exceeds the economic limit.
+
+    Args:
+        forecast_rates (np.ndarray): Array of forecast production rates (e3m3/day).
+        days_in_period (float): Number of days in each base period (e.g., 91.25 for quarterly).
+        time_step (float): Time step between forecast points in years (0.25 for quarterly).
+        economic_limit_daily (float): Economic production limit (e3m3/day).
+
+    Returns:
+        float: Total remaining reserves above the economic limit (in e3m3).
+    """
+    # Convert daily rates into volumes for each forecast interval
+    period_volumes = forecast_rates * days_in_period * time_step
+
+    # Only sum volumes for the portion of the forecast above the economic limit
+    above_limit_mask = (forecast_rates > economic_limit_daily)
+    return period_volumes[above_limit_mask].sum()
+
 class DCAAnalyzer:
     def __init__(self, source, time_period='Q'):
         """
@@ -81,6 +105,9 @@ class DCAAnalyzer:
         2. Considers the trade-off between coverage and error using a tolerance line
         3. Adapts to different well behaviors and production patterns
         
+        Additionally, if the global minimum error is found with data coverage below 20% of the total
+        historical data, the function will choose a global minimum among those points that cover at least 20%.
+        
         Args:
             results: List of dictionaries containing analysis results for different time periods
             min_coverage: Minimum required fraction of data to be included
@@ -103,10 +130,21 @@ class DCAAnalyzer:
         sorted_results = sorted(zip(dates, coverages, errors))
         dates, coverages, errors = zip(*sorted_results)
 
-        # Find the global minimum error and its corresponding coverage
+        # Determine global minimum based on error
         global_min_index = np.argmin(errors)
         global_min_error = errors[global_min_index]
         global_min_coverage = coverages[global_min_index]
+
+        # If the global minimum is found with less than 20% coverage,
+        # then select the best candidate among those with at least 20% coverage.
+        if global_min_coverage < 0.20:
+            indices = [i for i, cov in enumerate(coverages) if cov >= 0.20]
+            if indices:
+                filtered_errors = [errors[i] for i in indices]
+                new_index = indices[np.argmin(filtered_errors)]
+                global_min_index = new_index
+                global_min_error = errors[global_min_index]
+                global_min_coverage = coverages[global_min_index]
 
         # Calculate the error tolerance line slope
         error_range = max(errors) - min(errors)
@@ -191,22 +229,16 @@ class DCAAnalyzer:
             
             # Fit all decline curve models
             try:
-                models = {
+                models_local = {
                     'Hyperbolic': (self.models.hyperbolic, 
                                 curve_fit(self.models.hyperbolic, t, q, 
                                             bounds=((0, 0, 0), (np.inf, np.inf, 1)), 
-                                            maxfev=5000, method='trf')[0]),
-                    'Harmonic': (self.models.harmonic, 
-                                curve_fit(self.models.harmonic, t, q, 
-                                        maxfev=5000, method='trf')[0]),
-                    'Exponential': (self.models.exponential, 
-                                    curve_fit(self.models.exponential, t, q, 
                                             maxfev=5000, method='trf')[0])
                 }
                 
                 # Calculate errors for each model
                 errors = []
-                for name, (func, params) in models.items():
+                for name, (func, params) in models_local.items():
                     y_pred = func(t, *params)
                     error = mean_squared_error(q, y_pred)
                     errors.append(error)
@@ -251,7 +283,7 @@ class DCAAnalyzer:
         5. Selects the best model based on error metrics
         6. Generates production forecasts
         7. Calculates reserves and EUR
-        8. Creates visualization plots
+        8. Creates visualization plots (including the new production rate vs cumulative production plot)
         
         Args:
             well_authorization_number: Unique identifier for the well
@@ -307,29 +339,39 @@ class DCAAnalyzer:
         # Calculate production rates
         days_in_period = 91.25 if self.time_period == 'Q' else 30.44
         production_data['GAS_PRODUCTION_RATE'] = production_data['GAS_PRODUCTION_E3M3'] / days_in_period
-        production_data['Years'] = (production_data['ZONE_PROD_PERIOD'] - 
-                                    production_data['ZONE_PROD_PERIOD'].min()).dt.days / 365.25
+        production_data['Years'] = (
+            production_data['ZONE_PROD_PERIOD'] - production_data['ZONE_PROD_PERIOD'].min()
+        ).dt.days / 365.25
 
         # Find optimal analysis start date
-        best_start_date, change_detection_results, relative_slope, best_coverage, best_error = \
+        best_start_date, change_detection_results, relative_slope, best_coverage, best_error = (
             self.year_based_automated_change_detection(
-                production_data, min_years=1, max_years=40,
-                min_coverage=min_coverage, max_error=max_error,
+                production_data,
+                min_years=1,
+                max_years=40,
+                min_coverage=min_coverage,
+                max_error=max_error,
                 error_tolerance_factor=error_tolerance_factor,
                 trend_window=trend_window
             )
+        )
 
         # Visualize error vs coverage analysis
         self.visualizer.plot_error_vs_data_coverage(
-            change_detection_results, best_coverage, best_error,
-            relative_slope, well_authorization_number, scale_factor=mse_scale_factor
+            change_detection_results,
+            best_coverage,
+            best_error,
+            relative_slope,
+            well_authorization_number,
+            scale_factor=mse_scale_factor
         )
 
         # Prepare data for DCA
         dca_data = production_data[production_data['ZONE_PROD_PERIOD'] >= best_start_date]
         complete_data = self.preprocessor.preprocess_data(dca_data)
-        complete_data['Years'] = (complete_data['ZONE_PROD_PERIOD'] - 
-                                complete_data['ZONE_PROD_PERIOD'].min()).dt.days / 365.25
+        complete_data['Years'] = (
+            complete_data['ZONE_PROD_PERIOD'] - complete_data['ZONE_PROD_PERIOD'].min()
+        ).dt.days / 365.25
 
         t = complete_data['Years']
         q = complete_data['GAS_PRODUCTION_RATE_NORMALIZED']
@@ -343,21 +385,43 @@ class DCAAnalyzer:
         else:
             b_bounds = (0, 0.5)  # Conservative bounds for conventional wells
 
-        # Fit all decline curve models
-        models = {
-            'Hyperbolic': (self.models.hyperbolic, curve_fit(self.models.hyperbolic, t, q, 
-                        bounds=((0, 0, b_bounds[0]), (np.inf, np.inf, b_bounds[1])), 
-                        maxfev=5000)[0]),
-            'Harmonic': (self.models.harmonic, curve_fit(self.models.harmonic, t, q, maxfev=5000)[0]),
-            'Exponential': (self.models.exponential, curve_fit(self.models.exponential, t, q, maxfev=5000)[0])
-        }
+        # Fit all decline curve models using the fit_model method
+        models = {}
+        try:
+            # Use the fit_model method instead of direct curve_fit
+            hyperbolic_params = self.models.fit_model(
+                t, q, 
+                model_type='hyperbolic',
+                bounds=((0, 0, b_bounds[0]), (float('inf'), float('inf'), b_bounds[1])),
+                maxfev=5000
+            )
+            
+            # If b is very close to zero (< 0.01), use exponential model instead
+            if hyperbolic_params[2] < 0.01:
+                print(f"B factor {hyperbolic_params[2]:.6f} is effectively zero, using exponential model")
+                exponential_params = self.models.fit_model(t, q, model_type='exponential', maxfev=5000)
+                models['Exponential'] = (self.models.exponential, exponential_params)
+            else:
+                models['Hyperbolic'] = (self.models.hyperbolic, hyperbolic_params)
+            
+            # Fit other models
+            harmonic_params = self.models.fit_model(t, q, model_type='harmonic', maxfev=5000)
+            exponential_params = self.models.fit_model(t, q, model_type='exponential', maxfev=5000)
+            
+            if 'Hyperbolic' not in models:  # Only add if not already switched to exponential
+                models['Exponential'] = (self.models.exponential, exponential_params)
+            models['Harmonic'] = (self.models.harmonic, harmonic_params)
+        
+        except Exception as e:
+            print(f"Error during model fitting: {str(e)}")
+            raise
 
         # Evaluate models using multiple error metrics
         results = {}
         for name, (func, params) in models.items():
             y_pred = func(t, *params)
             mae = mean_absolute_error(q, y_pred)
-            rmse = np.sqrt(mean_squared_error(q, y_pred)) 
+            rmse = np.sqrt(mean_squared_error(q, y_pred))
             mape = mean_absolute_percentage_error(q, y_pred)
             smape = self.metrics.symmetric_mean_absolute_percentage_error(q, y_pred)
             results[name] = {
@@ -371,15 +435,35 @@ class DCAAnalyzer:
         best_model = min(results, key=lambda x: results[x]['RMSE'])
         best_func, best_params = models[best_model]
 
-        # Generate forecast timepoints
-        max_years = 100  # Maximum forecast period
-        t_forecast = np.arange(0, max_years, 0.25)  # Quarterly forecast points
+        # Enforce a minimum decline rate of 3% per year
+        best_params = np.array(best_params)  # Ensure mutability
+        if best_params[1] < 0.03:
+            print(
+                f"Decline rate {best_params[1]:.4f} is below minimum threshold "
+                f"for well {well_authorization_number}. Setting to 0.03."
+            )
+            best_params[1] = 0.03
+
+        # Compute fitted decline curve on the historical period for visualization
+        fitted_rates = best_func(complete_data['Years'], *best_params) * complete_data['GAS_PRODUCTION_RATE'].max()
+        fitted_cumulative = np.cumsum(fitted_rates * days_in_period)
+        fitted_decline_df = pd.DataFrame({
+            'CUMULATIVE_PRODUCTION': fitted_cumulative,
+            'GAS_PRODUCTION_RATE': fitted_rates
+        })
+
+        # Generate forecast timepoints (quarterly)
+        max_years = 100
+        t_forecast = np.arange(0, max_years, 0.25)
         
         # Create forecast dates for switch time calculation
         forecast_data = pd.DataFrame({
             'Years': t_forecast,
-            'Date': pd.date_range(start=complete_data['ZONE_PROD_PERIOD'].min(), 
-                                periods=len(t_forecast), freq='Q')
+            'Date': pd.date_range(
+                start=complete_data['ZONE_PROD_PERIOD'].min(), 
+                periods=len(t_forecast), 
+                freq='Q'
+            )
         })
 
         # Find optimal switch time for terminal decline
@@ -403,7 +487,6 @@ class DCAAnalyzer:
 
         # Generate forecast with terminal decline switching logic
         if best_model == 'Harmonic' or (best_model == 'Hyperbolic' and best_params[2] > 0.5):
-            # Apply terminal decline for aggressive decline models
             if best_model == 'Harmonic':
                 qi, di = best_params
                 b = 1
@@ -412,30 +495,43 @@ class DCAAnalyzer:
             forecast = self.models.combined_decline_c1(t_forecast, qi, di, b, switch_time) * \
                     complete_data['GAS_PRODUCTION_RATE'].max()
         else:
-            # Use original model if decline rate is conservative
             forecast = best_func(t_forecast, *best_params) * \
                     complete_data['GAS_PRODUCTION_RATE'].max()
 
         # Create forecast dataframe
         forecast_df = pd.DataFrame({
-            'Date': pd.date_range(start=complete_data['ZONE_PROD_PERIOD'].min(), 
-                                periods=len(t_forecast), freq='Q'),
+            'Date': pd.date_range(
+                start=complete_data['ZONE_PROD_PERIOD'].min(), 
+                periods=len(t_forecast), 
+                freq='Q'
+            ),
             'GAS_PRODUCTION_RATE': forecast
         })
 
         # Define economic limit based on well type
         if is_unconventional:
-            economic_limit_daily = 2.8  # e3m3 per day for unconventional wells
+            economic_limit_daily = 2.8  # e3m3/day for unconventional wells
         else:
-            economic_limit_daily = 1.4  # e3m3 per day for conventional wells
+            economic_limit_daily = 1.4  # e3m3/day for conventional wells
 
         # Generate and save visualization plots
-        self.visualizer.save_dca_plots(production_data, forecast_df, well_authorization_number, 
-                                    best_start_date, economic_limit_daily)
+        self.visualizer.save_dca_plots(
+            production_data, forecast_df, well_authorization_number, 
+            best_start_date, economic_limit_daily
+        )
+        self.visualizer.save_rate_vs_cumulative_plot(
+            production_data, well_authorization_number, 
+            decline_curve_df=fitted_decline_df
+        )
 
-        # Calculate reserves and EUR
+        # Calculate reserves and EUR (FIXED to account for time step)
         cumulative_production = production_data['GAS_PRODUCTION_E3M3'].sum()
-        remaining_reserves = forecast[forecast > economic_limit_daily].sum() * days_in_period
+        remaining_reserves = calculate_remaining_reserves(
+            forecast_rates=forecast,
+            days_in_period=days_in_period,
+            time_step=0.25,  # Because t_forecast increments in 0.25-year steps
+            economic_limit_daily=economic_limit_daily
+        )
         eur = cumulative_production + remaining_reserves
 
         # Calculate error metrics for the entire dataset
@@ -445,7 +541,20 @@ class DCAAnalyzer:
         full_rmse = np.sqrt(mean_squared_error(complete_data['GAS_PRODUCTION_RATE'], full_forecast))
         full_mape = mean_absolute_percentage_error(complete_data['GAS_PRODUCTION_RATE'], full_forecast)
         full_smape = self.metrics.symmetric_mean_absolute_percentage_error(
-            complete_data['GAS_PRODUCTION_RATE'], full_forecast)
+            complete_data['GAS_PRODUCTION_RATE'], full_forecast
+        )
+
+        # Calculate end-of-life date if we want to track it
+        time_to_limit = None
+        if forecast is not None and economic_limit_daily is not None:
+            above_limit_mask = forecast > economic_limit_daily
+            if np.any(above_limit_mask):
+                time_to_limit = np.sum(above_limit_mask) * 0.25
+
+        if time_to_limit is not None:
+            end_of_life_date = pd.to_datetime(best_start_date) + pd.DateOffset(days=int(time_to_limit * 365.25))
+        else:
+            end_of_life_date = None
 
         # Compile and return analysis results
         dca_results = {
@@ -469,73 +578,62 @@ class DCAAnalyzer:
         }
 
         # Extract and organize the parameters
-        # First calculate the time to economic limit for non-transitioning cases
-        time_to_limit = None
-        if forecast is not None and economic_limit_daily is not None:
-            # Convert the forecast array comparison to numpy operations
-            above_limit_mask = forecast > economic_limit_daily
-            if np.any(above_limit_mask):
-                time_to_limit = np.sum(above_limit_mask) * 0.25  # Since forecast points are quarterly (0.25 years)
-
-        # Create base parameter summary
         parameter_summary = {
             'well_authorization_number': well_authorization_number,
             'dca_start_date': best_start_date,
             'model': best_model,
-            'q_model': best_params[0] * complete_data['GAS_PRODUCTION_RATE'].max(),  # Denormalized qi
-            'd_model': best_params[1],  # di value
-            'b_model': best_params[2] if best_model == 'Hyperbolic' else (1 if best_model == 'Harmonic' else 0),
-            't_model': switch_time if (best_model == 'Harmonic' or 
-                                        (best_model == 'Hyperbolic' and 
-                                        (best_params[2] > 0.5 if best_model == 'Hyperbolic' else False))) 
-                        else time_to_limit,
-            'has_transition': 'yes' if (best_model == 'Harmonic' or 
-                                        (best_model == 'Hyperbolic' and best_params[2] > 0.5)) else 'no',
+            'q_model': best_params[0] * complete_data['GAS_PRODUCTION_RATE'].max(),
+            'd_model': best_params[1],
+            'b_model': (
+                best_params[2] if best_model == 'Hyperbolic'
+                else (1 if best_model == 'Harmonic' else 0)
+            ),
+            't_model': (
+                switch_time
+                if (best_model == 'Harmonic' or (best_model == 'Hyperbolic' and best_params[2] > 0.5))
+                else time_to_limit
+            ),
+            'has_transition': (
+                'yes' if (best_model == 'Harmonic' or
+                        (best_model == 'Hyperbolic' and best_params[2] > 0.5))
+                else 'no'
+            ),
+            'end_of_life_date': end_of_life_date
         }
 
-        # Add transition parameters if applicable
+        # If there's a transition, compute transition parameters
         if parameter_summary['has_transition'] == 'yes':
-            # Calculate transition parameters using combined_decline_c1 logic
             if best_model == 'Harmonic':
                 qi, di = best_params
                 b = 1
             else:
                 qi, di, b = best_params
             
-            # Calculate initial hyperbolic decline same as combined_decline_c1
-            t_array = np.array([0, switch_time])  # Need points for interpolation
+            t_array = np.array([0, switch_time])
             hyp_decline = self.models.hyperbolic(t_array, qi, di, b)
-            
-            # Get rate at switch point using same interpolation as combined_decline_c1
             exp_start_rate = np.interp(switch_time, t_array, hyp_decline)
-            
-            # Calculate exponential decline rate identically to combined_decline_c1
             hyp_slope_at_switch = self.models.hyperbolic_derivative(switch_time, qi, di, b)
-            di_exp = -hyp_slope_at_switch / exp_start_rate  # Terminal decline rate
+            di_exp = -hyp_slope_at_switch / exp_start_rate
             
-            # Denormalize the transition rate
             exp_start_rate_denorm = exp_start_rate * complete_data['GAS_PRODUCTION_RATE'].max()
-            
-            # Calculate exponential segment from switch time to end
             t_after_switch = t_forecast[t_forecast >= switch_time]
             exp_decline = self.models.exponential(t_after_switch - switch_time, exp_start_rate, di_exp)
             exp_decline_denorm = exp_decline * complete_data['GAS_PRODUCTION_RATE'].max()
             
-            # Find where exponential decline reaches economic limit
             above_limit_mask = exp_decline_denorm > economic_limit_daily
             if np.any(above_limit_mask):
-                # Time from switch until economic limit
-                transition_time = np.sum(above_limit_mask) * 0.25  # Quarterly points
+                transition_time = np.sum(above_limit_mask) * 0.25
             else:
-                # Use remaining forecast period if never reaches limit
                 transition_time = len(t_after_switch) * 0.25
             
             parameter_summary.update({
-                'transition_start_date': (pd.to_datetime(best_start_date) + 
-                                            pd.Timedelta(days=int(switch_time * 365.25))),
-                'q_transition': exp_start_rate_denorm,  # Using actual interpolated transition rate
-                'd_transition': di_exp,  # Using calculated exponential decline rate
-                't_transition': transition_time  # Time from transition until economic limit/end
+                'transition_start_date': (
+                    pd.to_datetime(best_start_date)
+                    + pd.Timedelta(days=int(switch_time * 365.25))
+                ),
+                'q_transition': exp_start_rate_denorm,
+                'd_transition': di_exp,
+                't_transition': transition_time
             })
         else:
             parameter_summary.update({
@@ -544,7 +642,7 @@ class DCAAnalyzer:
                 'd_transition': None,
                 't_transition': None
             })
-        # Add to existing dca_results without affecting current functionality
+
         dca_results['parameter_summary'] = parameter_summary
         
         return dca_results
@@ -576,6 +674,10 @@ class DCAAnalyzer:
             - Log scale plots: results/log_scale/
             - Error analysis plots: results/error_analysis/
             - Summary CSV: results/dca_analysis_summary.csv
+            - Summary Excel: results/dca_analysis_summary.xlsx with multiple sheets:
+                - Full Summary
+                - Error Statistics
+                - Error Ranges
         """
         # Create output directories
         for dir_name in ['normal_scale', 'log_scale', 'error_analysis']:
@@ -601,7 +703,9 @@ class DCAAnalyzer:
                     mse_scale_factor=kwargs.get('mse_scale_factor', 1e3)
                 )
                 
-                # Store results in summary without MSE
+                param_sum = dca_results['parameter_summary']
+                
+                # Store results in summary including new detailed parameters
                 summary_data.append({
                     'Well': well_number,
                     'Best Model': dca_results['best_model'],
@@ -611,11 +715,16 @@ class DCAAnalyzer:
                     'EUR (E3M3)': dca_results['eur'],
                     'Switch Time (years)': dca_results['switch_time'],
                     'MAE': dca_results['full_mae'],
-                    # 'MSE': dca_results['full_mse'], 
                     'RMSE': dca_results['full_rmse'],
                     'MAPE': dca_results['full_mape'],
                     'SMAPE': dca_results['full_smape'],
-                    'Analysis Start Date': dca_results['best_start_date']
+                    'Analysis Start Date': dca_results['best_start_date'],
+                    'End of Life Date': param_sum.get('end_of_life_date'),
+                    'q_model': param_sum.get('q_model'),
+                    'd_model': param_sum.get('d_model'),
+                    'b_model': param_sum.get('b_model'),
+                    't_model': param_sum.get('t_model'),
+                    'Has Transition': param_sum.get('has_transition')
                 })
                 
                 print(f"Analysis completed successfully for Well {well_number}")
@@ -627,7 +736,6 @@ class DCAAnalyzer:
                 import traceback
                 traceback.print_exc()
                 
-                # Add failed well to summary with error information (without MSE field)
                 summary_data.append({
                     'Well': well_number,
                     'Best Model': 'Failed',
@@ -637,11 +745,16 @@ class DCAAnalyzer:
                     'EUR (E3M3)': None,
                     'Switch Time (years)': None,
                     'MAE': None,
-                    # 'MSE': None,
                     'RMSE': None,
                     'MAPE': None,
                     'SMAPE': None,
                     'Analysis Start Date': None,
+                    'End of Life Date': None,
+                    'q_model': None,
+                    'd_model': None,
+                    'b_model': None,
+                    't_model': None,
+                    'Has Transition': None,
                     'Error': str(e)
                 })
             
@@ -651,11 +764,20 @@ class DCAAnalyzer:
         summary_df = pd.DataFrame(summary_data)
         summary_df.to_csv('results/dca_analysis_summary.csv', index=False)
         
-        # Print completion message
+        # Create an Excel file with multiple sheets
+        with pd.ExcelWriter('results/dca_analysis_summary.xlsx') as writer:
+            summary_df.to_excel(writer, sheet_name='Full Summary', index=False)
+            summary_df.describe().to_excel(writer, sheet_name='Error Statistics')
+            error_metrics = ['MAE', 'RMSE', 'MAPE', 'SMAPE']
+            error_ranges = summary_df[error_metrics].agg(['min', 'max', 'median'])
+            error_ranges.loc['range'] = error_ranges.loc['max'] - error_ranges.loc['min']
+            error_ranges.to_excel(writer, sheet_name='Error Ranges')
+        
         print("\nAnalysis complete. Results saved in results folder:")
         print("- Normal scale plots: results/normal_scale/")
         print("- Log scale plots: results/log_scale/")
         print("- Error analysis plots: results/error_analysis/")
-        print("- Summary: results/dca_analysis_summary.csv")
+        print("- Summary CSV: results/dca_analysis_summary.csv")
+        print("- Summary Excel: results/dca_analysis_summary.xlsx")
         
         return summary_df

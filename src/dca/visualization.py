@@ -16,9 +16,8 @@ Key Features:
 Output Structure:
 results/
 ├── normal_scale/      # Linear scale production plots
-├── log_scale/        # Logarithmic scale production plots
-└── error_analysis/   # Error vs coverage analysis plots
-
+├── log_scale/         # Logarithmic scale production plots
+└── error_analysis/    # Error vs coverage analysis plots
 """
 
 import os
@@ -37,7 +36,6 @@ class DCAVisualizer:
     - Error analysis plots
     - Consistent styling across plots
     - Automated file management
-    
     """
     
     def __init__(self, output_dir="results"):
@@ -46,12 +44,13 @@ class DCAVisualizer:
         
         Args:
             output_dir (str): Base directory for saving plots
-                            Will create if doesn't exist
+                              Will create if doesn't exist
                             
         Directory Structure Created:
         - {output_dir}/normal_scale/
         - {output_dir}/log_scale/
         - {output_dir}/error_analysis/
+        - {output_dir}/rate_vs_cumulative/
         """
         self.output_dir = output_dir
         self._create_output_directories()
@@ -66,7 +65,7 @@ class DCAVisualizer:
         Create directory structure for output files.
         Creates directories if they don't exist.
         """
-        for subdir in ["normal_scale", "log_scale", "error_analysis"]:
+        for subdir in ["normal_scale", "log_scale", "error_analysis", "rate_vs_cumulative"]:
             os.makedirs(os.path.join(self.output_dir, subdir), exist_ok=True)
     
     def _save_figure(self, filepath):
@@ -88,7 +87,7 @@ class DCAVisualizer:
             plt.close()
     
     def plot_error_vs_data_coverage(self, results, best_coverage, best_error, 
-                                  relative_slope, well_number, scale_factor=1e3):
+                                    relative_slope, well_number, scale_factor=1e3):
         """
         Create error analysis plot showing error vs data coverage relationship.
         
@@ -104,7 +103,7 @@ class DCAVisualizer:
             best_coverage (float): Coverage at chosen analysis point
             best_error (float): Error at chosen analysis point
             relative_slope (float): Slope of error tolerance line
-            well_number (int): Well identification number
+            well_number (int or str): Well identification number
             scale_factor (float): Factor for scaling error values
             
         Plot Elements:
@@ -133,19 +132,21 @@ class DCAVisualizer:
             
             # Add error tolerance line
             tolerance_line_x = [global_min_coverage, max_coverage]
-            tolerance_line_y = [global_min_error, 
-                              global_min_error + (relative_slope * scale_factor) * (max_coverage - global_min_coverage)]
+            tolerance_line_y = [
+                global_min_error, 
+                global_min_error + (relative_slope * scale_factor) * (max_coverage - global_min_coverage)
+            ]
             plt.plot(tolerance_line_x, tolerance_line_y, 'g--', label='Error Tolerance Line')
             
             # Highlight key points
             plt.plot(best_coverage, best_error * scale_factor, marker='s', color='green', 
-                    markersize=10, label='Chosen Point')
+                     markersize=10, label='Chosen Point')
             plt.plot(global_min_coverage, global_min_error, marker='*', color='black', 
-                    markersize=12, label='Global Minimum')
+                     markersize=12, label='Global Minimum')
             
             # Add annotations
             self._add_annotations(best_coverage, best_error, scale_factor, 
-                                global_min_coverage, global_min_error)
+                                  global_min_coverage, global_min_error)
             
             # Style and format plot
             plt.xlabel('Data Coverage')
@@ -161,7 +162,7 @@ class DCAVisualizer:
             # Save plot
             plt.tight_layout()
             filepath = os.path.join(self.output_dir, "error_analysis", 
-                                  f"well_{well_number}_error_analysis.png")
+                                    f"well_{well_number}_error_analysis.png")
             self._save_figure(filepath)
             
         except Exception as e:
@@ -169,7 +170,7 @@ class DCAVisualizer:
             plt.close()
     
     def _add_annotations(self, best_coverage, best_error, scale_factor, 
-                        global_min_coverage, global_min_error):
+                         global_min_coverage, global_min_error):
         """
         Add text annotations to error analysis plot.
         
@@ -183,13 +184,13 @@ class DCAVisualizer:
         - Semi-transparent backgrounds
         """
         plt.annotate('CP', (best_coverage, best_error * scale_factor),
-                    xytext=(5, 5), textcoords='offset points',
-                    bbox=dict(boxstyle="round", fc="w", ec="0.5", alpha=0.9),
-                    arrowprops=dict(arrowstyle="->"))
+                     xytext=(5, 5), textcoords='offset points',
+                     bbox=dict(boxstyle="round", fc="w", ec="0.5", alpha=0.9),
+                     arrowprops=dict(arrowstyle="->"))
         plt.annotate('GM', (global_min_coverage, global_min_error),
-                    xytext=(25, 25), textcoords='offset points',
-                    bbox=dict(boxstyle="round", fc="w", ec="0.5", alpha=0.9),
-                    arrowprops=dict(arrowstyle="->"))
+                     xytext=(25, 25), textcoords='offset points',
+                     bbox=dict(boxstyle="round", fc="w", ec="0.5", alpha=0.9),
+                     arrowprops=dict(arrowstyle="->"))
     
     def _add_year_labels(self, coverages, errors, dates):
         """
@@ -208,12 +209,56 @@ class DCAVisualizer:
         for i, (coverage, error, date) in enumerate(zip(coverages, errors, dates)):
             if i % 3 == 0:  # Add label every third point
                 plt.annotate(date.strftime('%Y'), (coverage, error), 
-                           textcoords="offset points", xytext=(0, 10), 
-                           ha='center', va='bottom', color='black', 
-                           fontsize=8, rotation=30)
+                             textcoords="offset points", xytext=(0, 10), 
+                             ha='center', va='bottom', color='black', 
+                             fontsize=8, rotation=30)
+                
+    def save_rate_vs_cumulative_plot(self, production_data, well_number, decline_curve_df=None):
+        """
+        Generate and save a plot of Gas Production Rate vs Cumulative Gas Production.
+
+        The plot is generated using the historical production data. Cumulative production is 
+        computed as the cumulative sum of 'GAS_PRODUCTION_E3M3'. The production rate is taken 
+        from 'GAS_PRODUCTION_RATE'. If a decline curve is provided, it is overlaid on the plot.
+
+        Args:
+            production_data (DataFrame): Historical production data.
+            well_number (int or str): Identifier for the well.
+            decline_curve_df (DataFrame, optional): DataFrame with columns 
+                'CUMULATIVE_PRODUCTION' and 'GAS_PRODUCTION_RATE' representing the fitted decline curve.
+        """
+        # Ensure the data is sorted chronologically
+        prod_data = production_data.sort_values('ZONE_PROD_PERIOD').copy()
         
+        # Calculate cumulative production (cumulative sum of production volumes)
+        prod_data['CUMULATIVE_PRODUCTION'] = prod_data['GAS_PRODUCTION_E3M3'].cumsum()
+
+        # Create the plot
+        plt.figure(figsize=self.default_figsize)
+        plt.plot(prod_data['CUMULATIVE_PRODUCTION'], prod_data['GAS_PRODUCTION_RATE'],
+                 marker='o', color='blue', label='Production Data')
+        
+        # If provided, overlay the fitted decline curve
+        if decline_curve_df is not None:
+            plt.plot(decline_curve_df['CUMULATIVE_PRODUCTION'], decline_curve_df['GAS_PRODUCTION_RATE'],
+                     marker='x', color='red', linestyle='-', linewidth=2, label='Fitted Decline')
+        
+        plt.xlabel('Cumulative Gas Production (E3M3)')
+        plt.ylabel('Gas Production Rate (E3M3/day)')
+        plt.title(f'Gas Production Rate vs Cumulative Gas Production for Well {well_number}')
+        plt.grid(True)
+        plt.legend()
+
+        # Create a new subdirectory for this plot
+        rate_cum_dir = os.path.join(self.output_dir, "rate_vs_cumulative")
+        os.makedirs(rate_cum_dir, exist_ok=True)
+
+        # Save the plot
+        filepath = os.path.join(rate_cum_dir, f"well_{well_number}_rate_vs_cumulative.png")
+        self._save_figure(filepath)
+
     def save_dca_plots(self, production_data, forecast_df, well_number, 
-                      best_start_date, economic_limit_daily):
+                       best_start_date, economic_limit_daily):
         """
         Generate and save production rate plots in both normal and log scales.
         
@@ -250,8 +295,8 @@ class DCAVisualizer:
         )
     
     def _create_production_plot(self, production_data, forecast_df, well_number,
-                              best_start_date, economic_limit_daily, last_data_date,
-                              log_scale=False):
+                                best_start_date, economic_limit_daily, last_data_date,
+                                log_scale=False):
         """
         Create production rate visualization with specified scale.
         
@@ -270,69 +315,126 @@ class DCAVisualizer:
         - Production forecast (green dashed line)
         - Economic limit (black dashed line)
         - Analysis start date (green vertical line)
+        - Automatic truncation:
+          1) By default, 20 years after last_data_date
+          2) If forecast crosses economic limit in the future, 
+             truncate at crossing + 5 years (or 20 years, whichever is earlier)
         """
-        plt.figure(figsize=(16, 8))
-        
-        # Handle data for log scale
+        plt.figure(figsize=self.default_figsize)
+
+        # Separate copies for plotting, so we can remove zero/negative values in log scale
+        data_for_plot = production_data.copy()
+        forecast_for_plot = forecast_df.copy()
+
+        # Remove zero or negative rates for log scale
         if log_scale:
-            production_data = production_data[production_data['GAS_PRODUCTION_RATE'] > 0]
+            data_for_plot = data_for_plot[data_for_plot['GAS_PRODUCTION_RATE'] > 0]
+            forecast_for_plot = forecast_for_plot[forecast_for_plot['GAS_PRODUCTION_RATE'] > 0]
+            plt.yscale('log')
         
-        # Plot historical data points
-        plt.scatter(production_data['ZONE_PROD_PERIOD'], production_data['GAS_PRODUCTION_RATE'],
-                   color='blue', label='Historical Data', alpha=0.6, s=40)
+        # Plot historical data
+        plt.scatter(data_for_plot['ZONE_PROD_PERIOD'], data_for_plot['GAS_PRODUCTION_RATE'],
+                    color='blue', label='Historical Data', alpha=0.6, s=40)
         
-        # Split and plot DCA fit and forecast
-        mask_fit = forecast_df['Date'] <= last_data_date
-        mask_forecast = forecast_df['Date'] > last_data_date
+        # Split the forecast into "fit" portion (<= last_data_date) and "future" portion (> last_data_date)
+        mask_fit = forecast_for_plot['Date'] <= last_data_date
+        mask_forecast = forecast_for_plot['Date'] > last_data_date
         
-        plt.plot(forecast_df[mask_fit]['Date'], forecast_df[mask_fit]['GAS_PRODUCTION_RATE'],
-                color='red', label='DCA Fit', linewidth=2)
-        plt.plot(forecast_df[mask_forecast]['Date'], forecast_df[mask_forecast]['GAS_PRODUCTION_RATE'],
-                color='green', linestyle='--', label='DCA Forecast', linewidth=2)
+        plt.plot(forecast_for_plot[mask_fit]['Date'], 
+                 forecast_for_plot[mask_fit]['GAS_PRODUCTION_RATE'],
+                 color='red', label='DCA Fit', linewidth=2)
+        plt.plot(forecast_for_plot[mask_forecast]['Date'], 
+                 forecast_for_plot[mask_forecast]['GAS_PRODUCTION_RATE'],
+                 color='green', linestyle='--', label='DCA Forecast', linewidth=2)
         
-        # Add economic limit line with updated label and annotation
+        # Add economic limit line
         plt.axhline(y=economic_limit_daily, color='black', linestyle='--', 
-                   label=f'Economic Limit: {economic_limit_daily} E3M3/day')
-        
-        # # Add text annotation for economic limit
-        # x_pos = production_data['ZONE_PROD_PERIOD'].min()
-        # plt.text(x_pos, economic_limit_daily * 1.05, f'{economic_limit_daily} E3M3/day',
-        #         color='black', fontsize=10, fontweight='bold')
+                    label=f'Economic Limit: {economic_limit_daily} E3M3/day')
         
         # Add analysis start date line
         plt.axvline(x=best_start_date, color='green', linestyle='--', linewidth=2, label='DCA Start Date')
-        
-        # Configure axis properties
-        if log_scale:
-            plt.yscale('log')
-            y_min = max(production_data['GAS_PRODUCTION_RATE'].min(), 0.1)
-            y_max = max(production_data['GAS_PRODUCTION_RATE'].max(),
-                       forecast_df['GAS_PRODUCTION_RATE'].max())
-            plt.ylim(bottom=y_min, top=y_max * 1.1)
-            plot_type = "log"
-            title_suffix = " (Log Scale)"
-        else:
-            plot_type = "normal"
-            title_suffix = ""
-        
-        # Set x-axis range and format
+
+        # -----------------------
+        # DYNAMIC X-AXIS TRUNCATION
+        # -----------------------
+        # 1) x_min: earliest production date
         x_min = production_data['ZONE_PROD_PERIOD'].min()
-        plt.xlim(left=x_min, right=pd.Timestamp('2060-01-01'))
-        plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%Y'))
-        plt.gca().xaxis.set_major_locator(mdates.YearLocator(10))
         
-        # Add labels and styling
-        plt.title(f'Gas Production Rate and DCA Forecast for Well {well_number}{title_suffix}')
+        # 2) By default, show up to 20 years after the last historical date
+        x_max_20_years = last_data_date + pd.DateOffset(years=20)
+        
+        # 3) Check if forecast crosses the economic limit AFTER last_data_date
+        mask_below_limit = forecast_for_plot[
+            (forecast_for_plot['Date'] > last_data_date) & 
+            (forecast_for_plot['GAS_PRODUCTION_RATE'] <= economic_limit_daily)
+        ]
+        
+        if not mask_below_limit.empty:
+            # First crossing date after the last historical data
+            crossing_date = mask_below_limit['Date'].iloc[0]
+            # crossing_date + 5 years
+            crossing_plus_5 = crossing_date + pd.DateOffset(years=5)
+            # x_max is the earlier of crossing+5 or the 20-year mark
+            x_max = min(x_max_20_years, crossing_plus_5)
+        else:
+            # If there's no crossing in the future or well is already below limit, 
+            # just show up to the 20-year mark
+            x_max = x_max_20_years
+
+        # 4) Also ensure we do not extend beyond the actual forecast's max date
+        actual_forecast_end = forecast_for_plot['Date'].max() if not forecast_for_plot.empty else last_data_date
+        x_max = min(x_max, actual_forecast_end)
+
+        # Final x-limits
+        plt.xlim(left=x_min, right=x_max)
+
+        # If log scale, set y-limits to ensure we see the economic limit and any low-rate forecasts
+        if log_scale:
+            relevant_rates = []
+            if not data_for_plot.empty:
+                relevant_rates.extend(data_for_plot['GAS_PRODUCTION_RATE'].tolist())
+            if not forecast_for_plot.empty:
+                relevant_rates.extend(forecast_for_plot['GAS_PRODUCTION_RATE'].tolist())
+            relevant_rates.append(economic_limit_daily)
+
+            # Filter out zero or negative rates
+            relevant_rates = [r for r in relevant_rates if r > 0]
+
+            # If everything is zero or negative (edge case), provide a fallback
+            if not relevant_rates:
+                relevant_rates = [1e-6, 1]
+
+            min_val = min(relevant_rates)
+            max_val = max(relevant_rates)
+
+            # Add a margin so we don’t cut off the top or bottom
+            y_min = min_val / 1.5
+            y_max = max_val * 1.1
+
+            # Ensure bottom is strictly > 0 for log scale
+            if y_min <= 0:
+                y_min = 1e-6
+
+            plt.ylim(bottom=y_min, top=y_max)
+
+        # Configure x-axis date formatting
+        plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%Y'))
+        # Adjust locator if you prefer different intervals, e.g., every 5 years
+        plt.gca().xaxis.set_major_locator(mdates.YearLocator(5))
+        
+        # Final styling
+        scale_label = "Log Scale" if log_scale else "Normal Scale"
+        plt.title(f'Gas Production Rate and DCA Forecast for Well {well_number} ({scale_label})')
         plt.xlabel('Date')
         plt.ylabel('Gas Production Rate (E3M3/day)')
         plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
         plt.grid(True, alpha=0.3, which='both' if log_scale else 'major')
         
-        # Adjust layout and save plot
+        # Save the plot
         plt.tight_layout()
         plt.subplots_adjust(top=0.95, right=0.85)
         
+        plot_type = "log" if log_scale else "normal"
         filepath = os.path.join(self.output_dir, f"{plot_type}_scale", 
-                              f"well_{well_number}_{plot_type}.png")
-        plt.savefig(filepath, dpi=300, bbox_inches='tight')
-        plt.close()
+                                f"well_{well_number}_{plot_type}.png")
+        self._save_figure(filepath)
