@@ -28,29 +28,33 @@ from .utils import MetricsCalculator, DataPreprocessor
 from .visualization import DCAVisualizer
 from .data_loader import DCADataLoader
 
-def calculate_remaining_reserves(forecast_rates, days_in_period, time_step, economic_limit_daily):
+def calculate_remaining_reserves(forecast_df, production_end_date, economic_limit_daily, days_in_period):
     """
-    Calculate remaining reserves by integrating forecast rates over the actual time step.
-
-    This method converts each forecast rate (in e3m3/day) into volume over the
-    corresponding time interval (days_in_period * time_step). It then sums only
-    the volumes for points where the rate exceeds the economic limit.
-
+    Calculate remaining reserves using only production after the historical data ends.
+    
     Args:
-        forecast_rates (np.ndarray): Array of forecast production rates (e3m3/day).
-        days_in_period (float): Number of days in each base period (e.g., 91.25 for quarterly).
-        time_step (float): Time step between forecast points in years (0.25 for quarterly).
-        economic_limit_daily (float): Economic production limit (e3m3/day).
-
-    Returns:
-        float: Total remaining reserves above the economic limit (in e3m3).
+        forecast_df: DataFrame with Date and GAS_PRODUCTION_RATE columns
+        production_end_date: Last date of historical production
+        economic_limit_daily: Economic limit for production
+        days_in_period: Days in each forecast period (e.g., 91.25 for quarterly)
     """
-    # Convert daily rates into volumes for each forecast interval
-    period_volumes = forecast_rates * days_in_period * time_step
-
-    # Only sum volumes for the portion of the forecast above the economic limit
-    above_limit_mask = (forecast_rates > economic_limit_daily)
-    return period_volumes[above_limit_mask].sum()
+    # Filter only forecast points after the end of historical data
+    future_forecast = forecast_df[forecast_df['Date'] > production_end_date].copy()
+    
+    # Calculate volume for each period
+    # For proper accounting, calculate actual days in each period
+    future_forecast['days'] = future_forecast['Date'].diff().dt.days.fillna(
+        (future_forecast['Date'].iloc[0] - production_end_date).days)
+    
+    # Calculate volume as rate × days
+    future_forecast['volume'] = future_forecast['GAS_PRODUCTION_RATE'] * future_forecast['days']
+    
+    # Only include volumes where rate exceeds economic limit
+    remaining_reserves = future_forecast.loc[
+        future_forecast['GAS_PRODUCTION_RATE'] > economic_limit_daily, 'volume'
+    ].sum()
+    
+    return remaining_reserves
 
 class DCAAnalyzer:
     def __init__(self, source, time_period='Q'):
@@ -95,7 +99,7 @@ class DCAAnalyzer:
         return well_type == 'Y'
 
     def improved_adaptive_dca_cutoff(self, results, min_coverage=0.3, max_error=0.1, 
-                                   error_tolerance_factor=0.1, trend_window=5):
+                                     error_tolerance_factor=0.1, trend_window=5):
         """
         Determine the optimal DCA cutoff point using an improved adaptive approach that balances
         data coverage and model error.
@@ -156,8 +160,8 @@ class DCAAnalyzer:
 
         # Find all points below the tolerance line with sufficient coverage
         points_below_line = [(i, coverage, error) for i, (coverage, error) 
-                            in enumerate(zip(coverages, errors))
-                            if error <= tolerance_line(coverage) and coverage >= global_min_coverage]
+                             in enumerate(zip(coverages, errors))
+                             if error <= tolerance_line(coverage) and coverage >= global_min_coverage]
 
         if points_below_line:
             # Select the point with maximum coverage among acceptable points
@@ -165,13 +169,13 @@ class DCAAnalyzer:
         else:
             # Default to global minimum if no points meet criteria
             best_index, best_coverage, best_error = (global_min_index, global_min_coverage, 
-                                                   global_min_error)
+                                                     global_min_error)
 
         return best_coverage, best_error, dates[best_index], relative_slope
 
     def year_based_automated_change_detection(self, production_data, min_years=1, max_years=40,
-                                            min_coverage=0.3, max_error=0.1,
-                                            error_tolerance_factor=0.1, trend_window=5):
+                                              min_coverage=0.3, max_error=0.1,
+                                              error_tolerance_factor=0.1, trend_window=5):
         """
         Detect significant changes in production data using a year-based sliding window approach.
         This method helps identify the optimal starting point for DCA analysis by:
@@ -231,9 +235,9 @@ class DCAAnalyzer:
             try:
                 models_local = {
                     'Hyperbolic': (self.models.hyperbolic, 
-                                curve_fit(self.models.hyperbolic, t, q, 
-                                            bounds=((0, 0, 0), (np.inf, np.inf, 1)), 
-                                            maxfev=5000, method='trf')[0])
+                                   curve_fit(self.models.hyperbolic, t, q, 
+                                             bounds=((0, 0, 0), (np.inf, np.inf, 1)), 
+                                             maxfev=5000, method='trf')[0])
                 }
                 
                 # Calculate errors for each model
@@ -271,7 +275,7 @@ class DCAAnalyzer:
         return best_start_date, results, relative_slope, best_coverage, best_error
 
     def perform_dca_analysis(self, well_authorization_number, min_coverage=0.3, max_error=0.1, 
-                            error_tolerance_factor=0.1, trend_window=5, mse_scale_factor=1e3):
+                             error_tolerance_factor=0.1, trend_window=5, mse_scale_factor=1e3):
         """
         Performs comprehensive Decline Curve Analysis for a given well.
         
@@ -342,6 +346,12 @@ class DCAAnalyzer:
         production_data['Years'] = (
             production_data['ZONE_PROD_PERIOD'] - production_data['ZONE_PROD_PERIOD'].min()
         ).dt.days / 365.25
+
+        # Define economic limit based on well type (used by both visualization and reserves calculation)
+        if is_unconventional:
+            economic_limit_daily = 2.8  # e3m3/day for unconventional wells
+        else:
+            economic_limit_daily = 1.4  # e3m3/day for conventional wells
 
         # Find optimal analysis start date
         best_start_date, change_detection_results, relative_slope, best_coverage, best_error = (
@@ -444,31 +454,24 @@ class DCAAnalyzer:
             )
             best_params[1] = 0.03
 
-        # Compute fitted decline curve on the historical period for visualization
-        fitted_rates = best_func(complete_data['Years'], *best_params) * complete_data['GAS_PRODUCTION_RATE'].max()
-        fitted_cumulative = np.cumsum(fitted_rates * days_in_period)
-        fitted_decline_df = pd.DataFrame({
-            'CUMULATIVE_PRODUCTION': fitted_cumulative,
-            'GAS_PRODUCTION_RATE': fitted_rates
-        })
-
-        # Generate forecast timepoints (quarterly)
+        # Generate forecast timepoints (quarterly) up to 100 years
         max_years = 100
         t_forecast = np.arange(0, max_years, 0.25)
         
         # Create forecast dates for switch time calculation
-        forecast_data = pd.DataFrame({
+        forecast_df = pd.DataFrame({
             'Years': t_forecast,
             'Date': pd.date_range(
                 start=complete_data['ZONE_PROD_PERIOD'].min(), 
                 periods=len(t_forecast), 
                 freq='Q'
-            )
+            ),
+            'GAS_PRODUCTION_RATE': None  # Placeholder; will be filled later
         })
 
         # Find optimal switch time for terminal decline
         switch_time = self.preprocessor.find_switch_time(
-            forecast_data, 
+            forecast_df, 
             best_func, 
             t_forecast, 
             best_params, 
@@ -498,21 +501,58 @@ class DCAAnalyzer:
             forecast = best_func(t_forecast, *best_params) * \
                     complete_data['GAS_PRODUCTION_RATE'].max()
 
-        # Create forecast dataframe
-        forecast_df = pd.DataFrame({
-            'Date': pd.date_range(
-                start=complete_data['ZONE_PROD_PERIOD'].min(), 
-                periods=len(t_forecast), 
-                freq='Q'
-            ),
-            'GAS_PRODUCTION_RATE': forecast
-        })
+        # Update the forecast_df with actual production rates
+        forecast_df['GAS_PRODUCTION_RATE'] = forecast
 
-        # Define economic limit based on well type
-        if is_unconventional:
-            economic_limit_daily = 2.8  # e3m3/day for unconventional wells
+        #########################################################################
+        # Compute fitted decline curve on the entire historical + forecast period 
+        # for visualization in the rate vs cumulative plot, using a dense time grid
+        # and numerical integration.
+        #
+        # Steps:
+        # 1) Create a dense time array from 0 to the larger of the last historical 
+        #    data point (actual_historical_t_max) or forecast_t_max.
+        # 2) Evaluate the fitted decline model (including any switch time logic).
+        # 3) Numerically integrate the rate to obtain cumulative production.
+        # 4) Add an offset equal to production before best_start_date so that the model 
+        #    and actual cumulative production align.
+        #########################################################################
+        historical_t_min = 0.0
+        actual_historical_t_max = complete_data['Years'].max()
+        forecast_t_max = t_forecast[-1]
+        dense_t_max = max(actual_historical_t_max, forecast_t_max)
+
+        t_dense = np.linspace(historical_t_min, dense_t_max, 300)
+
+        # Evaluate the best model with or without combined decline
+        if best_model == 'Harmonic' or (best_model == 'Hyperbolic' and best_params[2] > 0.5):
+            if best_model == 'Harmonic':
+                qi, di = best_params
+                b = 1
+            else:
+                qi, di, b = best_params
+            q_dense = self.models.combined_decline_c1(t_dense, qi, di, b, switch_time) * \
+                    complete_data['GAS_PRODUCTION_RATE'].max()
         else:
-            economic_limit_daily = 1.4  # e3m3/day for conventional wells
+            q_dense = best_func(t_dense, *best_params) * complete_data['GAS_PRODUCTION_RATE'].max()
+
+        dt_in_years = t_dense[1] - t_dense[0]
+        days_per_step = dt_in_years * 365.25
+        vol_per_step = q_dense * days_per_step
+        Q_dense = np.cumsum(vol_per_step)
+
+        # Calculate offset: cumulative production before best_start_date
+        offset = production_data.loc[
+            production_data['ZONE_PROD_PERIOD'] < best_start_date, 
+            'GAS_PRODUCTION_E3M3'
+        ].sum()
+        Q_dense += offset
+
+        fitted_decline_df = pd.DataFrame({
+            'Years': t_dense,
+            'GAS_PRODUCTION_RATE': q_dense,
+            'CUMULATIVE_PRODUCTION': Q_dense
+        })
 
         # Generate and save visualization plots
         self.visualizer.save_dca_plots(
@@ -521,17 +561,22 @@ class DCAAnalyzer:
         )
         self.visualizer.save_rate_vs_cumulative_plot(
             production_data, well_authorization_number, 
-            decline_curve_df=fitted_decline_df
-        )
-
-        # Calculate reserves and EUR (FIXED to account for time step)
-        cumulative_production = production_data['GAS_PRODUCTION_E3M3'].sum()
-        remaining_reserves = calculate_remaining_reserves(
-            forecast_rates=forecast,
-            days_in_period=days_in_period,
-            time_step=0.25,  # Because t_forecast increments in 0.25-year steps
+            decline_curve_df=fitted_decline_df,
+            best_start_date=best_start_date,
             economic_limit_daily=economic_limit_daily
         )
+
+        # Calculate reserves and EUR using the updated approach
+        # Identify end of historical production
+        production_end_date = production_data['ZONE_PROD_PERIOD'].max()
+        # Calculate remaining reserves using filtered forecast
+        remaining_reserves = calculate_remaining_reserves(
+            forecast_df=forecast_df,
+            production_end_date=production_end_date,
+            economic_limit_daily=economic_limit_daily,
+            days_in_period=days_in_period
+        )
+        cumulative_production = production_data['GAS_PRODUCTION_E3M3'].sum()
         eur = cumulative_production + remaining_reserves
 
         # Calculate error metrics for the entire dataset
@@ -595,7 +640,7 @@ class DCAAnalyzer:
             ),
             'has_transition': (
                 'yes' if (best_model == 'Harmonic' or
-                        (best_model == 'Hyperbolic' and best_params[2] > 0.5))
+                          (best_model == 'Hyperbolic' and best_params[2] > 0.5))
                 else 'no'
             ),
             'end_of_life_date': end_of_life_date

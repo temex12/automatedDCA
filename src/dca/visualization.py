@@ -213,47 +213,78 @@ class DCAVisualizer:
                              ha='center', va='bottom', color='black', 
                              fontsize=8, rotation=30)
                 
-    def save_rate_vs_cumulative_plot(self, production_data, well_number, decline_curve_df=None):
+    def save_rate_vs_cumulative_plot(self, production_data, well_number, 
+                                     decline_curve_df=None, best_start_date=None,
+                                     economic_limit_daily=None):
         """
         Generate and save a plot of Gas Production Rate vs Cumulative Gas Production.
 
         The plot is generated using the historical production data. Cumulative production is 
         computed as the cumulative sum of 'GAS_PRODUCTION_E3M3'. The production rate is taken 
         from 'GAS_PRODUCTION_RATE'. If a decline curve is provided, it is overlaid on the plot.
+        
+        Optionally, if best_start_date is provided, a vertical line is added at the cumulative
+        production corresponding to that date, to indicate the start of DCA analysis.
+        
+        Additionally, if economic_limit_daily is provided, a horizontal dashed black line 
+        is added to represent the economic production limit.
 
         Args:
             production_data (DataFrame): Historical production data.
             well_number (int or str): Identifier for the well.
             decline_curve_df (DataFrame, optional): DataFrame with columns 
                 'CUMULATIVE_PRODUCTION' and 'GAS_PRODUCTION_RATE' representing the fitted decline curve.
+            best_start_date (datetime, optional): The DCA analysis start date to be annotated.
+            economic_limit_daily (float, optional): Economic production rate limit (E3M3/day)
         """
-        # Ensure the data is sorted chronologically
+        # Sort chronologically
         prod_data = production_data.sort_values('ZONE_PROD_PERIOD').copy()
-        
-        # Calculate cumulative production (cumulative sum of production volumes)
+        # Compute cumulative production
         prod_data['CUMULATIVE_PRODUCTION'] = prod_data['GAS_PRODUCTION_E3M3'].cumsum()
 
-        # Create the plot
         plt.figure(figsize=self.default_figsize)
-        plt.plot(prod_data['CUMULATIVE_PRODUCTION'], prod_data['GAS_PRODUCTION_RATE'],
-                 marker='o', color='blue', label='Production Data')
+
+        # Plot HISTORICAL DATA as a LINE (blue)
+        plt.plot(
+            prod_data['CUMULATIVE_PRODUCTION'], 
+            prod_data['GAS_PRODUCTION_RATE'],
+            color='blue', 
+            linestyle='-', 
+            linewidth=2, 
+            label='Historical Data'
+        )
         
-        # If provided, overlay the fitted decline curve
+        # Plot the fitted decline curve (red line) if provided
         if decline_curve_df is not None:
-            plt.plot(decline_curve_df['CUMULATIVE_PRODUCTION'], decline_curve_df['GAS_PRODUCTION_RATE'],
-                     marker='x', color='red', linestyle='-', linewidth=2, label='Fitted Decline')
+            plt.plot(
+                decline_curve_df['CUMULATIVE_PRODUCTION'], 
+                decline_curve_df['GAS_PRODUCTION_RATE'],
+                color='red', 
+                linestyle='-', 
+                linewidth=2, 
+                label='Fitted Decline'
+            )
         
+        # Add economic limit line if provided
+        if economic_limit_daily is not None:
+            plt.axhline(y=economic_limit_daily, color='black', linestyle='--', 
+                        linewidth=2, label=f'Economic Limit: {economic_limit_daily} E3M3/day')
+        
+        # Vertical line for DCA start date
+        if best_start_date is not None:
+            best_start_cum = prod_data.loc[
+                prod_data['ZONE_PROD_PERIOD'] < best_start_date, 'GAS_PRODUCTION_E3M3'
+            ].sum()
+            plt.axvline(x=best_start_cum, color='green', linestyle='--', linewidth=2, label='DCA Start')
+
         plt.xlabel('Cumulative Gas Production (E3M3)')
         plt.ylabel('Gas Production Rate (E3M3/day)')
         plt.title(f'Gas Production Rate vs Cumulative Gas Production for Well {well_number}')
         plt.grid(True)
         plt.legend()
 
-        # Create a new subdirectory for this plot
         rate_cum_dir = os.path.join(self.output_dir, "rate_vs_cumulative")
         os.makedirs(rate_cum_dir, exist_ok=True)
-
-        # Save the plot
         filepath = os.path.join(rate_cum_dir, f"well_{well_number}_rate_vs_cumulative.png")
         self._save_figure(filepath)
 
@@ -349,7 +380,7 @@ class DCAVisualizer:
         
         # Add economic limit line
         plt.axhline(y=economic_limit_daily, color='black', linestyle='--', 
-                    label=f'Economic Limit: {economic_limit_daily} E3M3/day')
+                    linewidth=2, label=f'Economic Limit: {economic_limit_daily} E3M3/day')
         
         # Add analysis start date line
         plt.axvline(x=best_start_date, color='green', linestyle='--', linewidth=2, label='DCA Start Date')
