@@ -140,44 +140,63 @@ class DataPreprocessor:
     """
     
     @staticmethod
-    def preprocess_data(data):
+    def preprocess_data(data, remove_upper_outliers=False, iqr_multiplier=2.0):
         """
         Clean and normalize production data for analysis.
-        
+
+        This method uses a decline-curve-aware approach to outlier removal:
+        - For declining production, high early values are expected (not outliers)
+        - Only clearly anomalous low values (shutins, near-zero) are removed by default
+        - Upper outlier removal is disabled by default to preserve peak production data
+
         Args:
             data (pd.DataFrame): Raw production data with 'GAS_PRODUCTION_RATE' column
-            
+            remove_upper_outliers (bool): If True, also remove upper outliers using IQR.
+                                         Default False to preserve high production values.
+            iqr_multiplier (float): Multiplier for IQR bounds (default 2.0, more conservative
+                                   than traditional 1.5 to preserve more data points)
+
         Returns:
             pd.DataFrame: Cleaned DataFrame with additional columns:
                 - GAS_PRODUCTION_RATE_NORMALIZED: Production rates scaled to [0,1]
-            
+
         Notes:
             Data Cleaning Steps:
-            1. Remove negligible rates (≤ 0.01)
-            2. Remove statistical outliers using 1.5 * IQR method
-            3. Normalize remaining rates to maximum value
-            
-        The IQR (Interquartile Range) method is robust to extreme values and
-        effective for production data which often contains anomalies.
+            1. Remove negligible rates (≤ 0.01) - captures shutins and zero production
+            2. Remove only LOWER outliers by default (anomalous low production during
+               what should be productive periods)
+            3. Optionally remove upper outliers if remove_upper_outliers=True
+            4. Normalize remaining rates to maximum value
+
+        The modified IQR approach is more appropriate for decline curves where:
+        - High production early in well life is expected, not anomalous
+        - Very low production (near-zero) indicates operational issues (shutins, workovers)
+        - The decline trend itself should be preserved
         """
-        # Remove negligible production rates
+        # Remove negligible production rates (shutins, zero production periods)
         data = data[data['GAS_PRODUCTION_RATE'] > 0.01].copy()
-        
-        # Calculate outlier bounds using IQR method
+
+        # Calculate outlier bounds using IQR method with configurable multiplier
         Q1 = data['GAS_PRODUCTION_RATE'].quantile(0.25)
         Q3 = data['GAS_PRODUCTION_RATE'].quantile(0.75)
         IQR = Q3 - Q1
-        lower_bound = Q1 - 1.5 * IQR
-        upper_bound = Q3 + 1.5 * IQR
-        
-        # Remove statistical outliers
-        data = data[(data['GAS_PRODUCTION_RATE'] >= lower_bound) & 
-                   (data['GAS_PRODUCTION_RATE'] <= upper_bound)]
-        
+        lower_bound = Q1 - iqr_multiplier * IQR
+
+        # Ensure lower bound doesn't go negative
+        lower_bound = max(lower_bound, 0.01)
+
+        # Remove only lower outliers by default (anomalous low production)
+        data = data[data['GAS_PRODUCTION_RATE'] >= lower_bound]
+
+        # Optionally remove upper outliers (disabled by default for decline curves)
+        if remove_upper_outliers:
+            upper_bound = Q3 + iqr_multiplier * IQR
+            data = data[data['GAS_PRODUCTION_RATE'] <= upper_bound]
+
         # Normalize to maximum rate
         max_production = data['GAS_PRODUCTION_RATE'].max()
         data['GAS_PRODUCTION_RATE_NORMALIZED'] = data['GAS_PRODUCTION_RATE'] / max_production
-        
+
         return data
     
     @staticmethod

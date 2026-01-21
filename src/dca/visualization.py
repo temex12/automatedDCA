@@ -363,9 +363,11 @@ class DCAVisualizer:
             forecast_for_plot = forecast_for_plot[forecast_for_plot['GAS_PRODUCTION_RATE'] > 0]
             plt.yscale('log')
         
-        # Plot historical data
-        plt.scatter(data_for_plot['ZONE_PROD_PERIOD'], data_for_plot['GAS_PRODUCTION_RATE'],
-                    color='blue', label='Historical Data', alpha=0.6, s=40)
+        # Plot historical data as a line (ValNav style) instead of scatter points
+        # Sort by date to ensure proper line connection
+        data_for_plot = data_for_plot.sort_values('ZONE_PROD_PERIOD')
+        plt.plot(data_for_plot['ZONE_PROD_PERIOD'], data_for_plot['GAS_PRODUCTION_RATE'],
+                 color='blue', linewidth=1.5, label='Historical Data', alpha=0.8)
         
         # Split the forecast into "fit" portion (<= last_data_date) and "future" portion (> last_data_date)
         mask_fit = forecast_for_plot['Date'] <= last_data_date
