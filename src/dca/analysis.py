@@ -28,6 +28,89 @@ from .utils import MetricsCalculator, DataPreprocessor
 from .visualization import DCAVisualizer
 from .data_loader import DCADataLoader
 
+
+def calculate_time_weights(t, recent_weight_factor=1.5, recent_data_fraction=0.15,
+                           weight_exponent=2.0):
+    """
+    Calculate time-based weights for curve fitting, giving more weight to recent data.
+
+    This helps the fitted decline curve better match recent production trends,
+    which is more relevant for forecasting than older historical data.
+
+    Args:
+        t: Array of time values (typically in years from start)
+        recent_weight_factor: Base factor controlling weight ratio (default 1.5).
+                             Set to 1.0 to disable weighting entirely.
+        recent_data_fraction: Not used in current implementation but kept for API
+                             compatibility.
+        weight_exponent: Power exponent for weight calculation (default 2.0).
+                        Higher values = more aggressive downweighting of early data.
+                        - 1.0: Linear weighting (gentle)
+                        - 2.0: Quadratic weighting (moderate, default)
+                        - 3.0: Cubic weighting (aggressive - recommended for poor recent fits)
+                        - 4.0+: Very aggressive (use if fits still don't match recent data)
+
+    Returns:
+        numpy.ndarray: Array of weights, with recent data weighted higher
+
+    Notes:
+        Weight formula: w(t) = (normalized_time + epsilon)^exponent
+
+        With weight_exponent=2 (default):
+          * Oldest point gets weight ~0.0001 (nearly zero)
+          * Midpoint gets weight ~0.25
+          * Most recent point gets weight ~1.0
+          * Last 15% of data gets ~39% of total influence
+          * Last 25% of data gets ~55% of total influence
+
+        With weight_exponent=3 (aggressive):
+          * Last 15% of data gets ~48% of total influence
+          * Last 25% of data gets ~65% of total influence
+
+        The key insight: using power-law weighting dramatically reduces early
+        data influence regardless of how many early points exist.
+    """
+    if recent_weight_factor <= 1.0:
+        # No weighting requested
+        return np.ones(len(t))
+
+    t = np.asarray(t)
+    n_points = len(t)
+
+    if n_points < 4:
+        # Too few points, don't weight
+        return np.ones(n_points)
+
+    t_max = t.max()
+    t_min = t.min()
+    t_range = t_max - t_min
+
+    if t_range <= 0:
+        return np.ones(n_points)
+
+    # Normalize time to [0, 1] range (0 = oldest, 1 = most recent)
+    normalized_t = (t - t_min) / t_range
+
+    # Add small epsilon to avoid zero weights at t=0
+    epsilon = 0.01
+
+    # Power-law weighting: w(t) = (normalized_t + epsilon)^exponent
+    # This dramatically reduces weight of early data points
+    weights = np.power(normalized_t + epsilon, weight_exponent)
+
+    # Normalize so max weight = 1.0 (for cleaner sigma values in curve_fit)
+    weights = weights / weights.max()
+
+    # Apply recent_weight_factor as additional scaling if > 1.5
+    # This allows further fine-tuning if needed
+    if recent_weight_factor > 1.5:
+        # Scale up the weight range
+        min_w = weights.min()
+        weights = min_w / recent_weight_factor + (1.0 - min_w / recent_weight_factor) * (weights - min_w) / (1.0 - min_w)
+
+    return weights
+
+
 def calculate_remaining_reserves(forecast_df, production_end_date, economic_limit_daily, days_in_period):
     """
     Calculate remaining reserves using only production after the historical data ends.
@@ -175,7 +258,9 @@ class DCAAnalyzer:
 
     def year_based_automated_change_detection(self, production_data, min_years=1, max_years=40,
                                               min_coverage=0.3, max_error=0.1,
-                                              error_tolerance_factor=0.1, trend_window=5):
+                                              error_tolerance_factor=0.1, trend_window=5,
+                                              recent_weight_factor=1.5, recent_data_fraction=0.15,
+                                              weight_exponent=2.0):
         """
         Detect significant changes in production data using a year-based sliding window approach.
         This method helps identify the optimal starting point for DCA analysis by:
@@ -183,7 +268,7 @@ class DCAAnalyzer:
         2. Fitting decline curves to each window
         3. Evaluating the quality of fit
         4. Finding the optimal balance between data coverage and model accuracy
-        
+
         Args:
             production_data: DataFrame containing production time series
             min_years: Minimum years of data to consider
@@ -192,7 +277,12 @@ class DCAAnalyzer:
             max_error: Maximum acceptable model error
             error_tolerance_factor: Controls the slope of the error tolerance line
             trend_window: Window size for trend analysis
-            
+            recent_weight_factor: Weight multiplier for recent data (default 1.5)
+            recent_data_fraction: Fraction of data considered "recent" (kept for API compatibility)
+            weight_exponent: Power exponent for weight calculation (default 2.0).
+                            Higher values = more aggressive downweighting of early data.
+                            Use 3.0 or 4.0 if fits don't match recent data well.
+
         Returns:
             tuple: (best_start_date, results, relative_slope, best_coverage, best_error)
         """
@@ -233,18 +323,29 @@ class DCAAnalyzer:
             
             # Fit all decline curve models
             try:
+                # Calculate time-based weights for recent data emphasis
+                t_array = np.asarray(t)
+                weights = calculate_time_weights(t_array, recent_weight_factor, recent_data_fraction, weight_exponent)
+
+                # Convert weights to sigma for curve_fit (lower sigma = higher weight)
+                # sigma = 1/sqrt(weight) so that weight appears in chi-squared
+                sigma = 1.0 / np.sqrt(weights)
+
                 models_local = {
-                    'Hyperbolic': (self.models.hyperbolic, 
-                                   curve_fit(self.models.hyperbolic, t, q, 
-                                             bounds=((0, 0, 0), (np.inf, np.inf, 1)), 
+                    'Hyperbolic': (self.models.hyperbolic,
+                                   curve_fit(self.models.hyperbolic, t, q,
+                                             sigma=sigma, absolute_sigma=True,
+                                             bounds=((0, 0, 0), (np.inf, np.inf, 1)),
                                              maxfev=5000, method='trf')[0])
                 }
-                
-                # Calculate errors for each model
+
+                # Calculate weighted errors for each model
                 errors = []
                 for name, (func, params) in models_local.items():
-                    y_pred = func(t, *params)
-                    error = mean_squared_error(q, y_pred)
+                    y_pred = func(t_array, *params)
+                    # Weighted MSE: mean of weight * (y - y_pred)^2
+                    weighted_squared_errors = weights * (np.asarray(q) - y_pred) ** 2
+                    error = np.mean(weighted_squared_errors)
                     errors.append(error)
                 
                 # Store results using the best model's error
@@ -274,11 +375,13 @@ class DCAAnalyzer:
         
         return best_start_date, results, relative_slope, best_coverage, best_error
 
-    def perform_dca_analysis(self, well_authorization_number, min_coverage=0.3, max_error=0.1, 
-                             error_tolerance_factor=0.1, trend_window=5, mse_scale_factor=1e3):
+    def perform_dca_analysis(self, well_authorization_number, min_coverage=0.3, max_error=0.1,
+                             error_tolerance_factor=0.1, trend_window=5, mse_scale_factor=1e3,
+                             recent_weight_factor=1.5, recent_data_fraction=0.15,
+                             weight_exponent=2.0):
         """
         Performs comprehensive Decline Curve Analysis for a given well.
-        
+
         This method:
         1. Determines well type (conventional/unconventional)
         2. Loads and preprocesses production data
@@ -288,7 +391,7 @@ class DCAAnalyzer:
         6. Generates production forecasts
         7. Calculates reserves and EUR
         8. Creates visualization plots (including the new production rate vs cumulative production plot)
-        
+
         Args:
             well_authorization_number: Unique identifier for the well
             min_coverage: Minimum required fraction of data to be included
@@ -296,7 +399,16 @@ class DCAAnalyzer:
             error_tolerance_factor: Controls the slope of the error tolerance line
             trend_window: Window size for trend analysis
             mse_scale_factor: Scaling factor for mean squared error visualization
-            
+            recent_weight_factor: Weight multiplier for recent data in fitting (default 1.5).
+                                 Set to 1.0 to disable recent data weighting.
+            recent_data_fraction: Fraction of data considered "recent" (kept for API compatibility)
+            weight_exponent: Power exponent for time-based weighting (default 2.0).
+                            Higher values give MORE weight to recent data:
+                            - 1.0: Gentle weighting
+                            - 2.0: Moderate weighting (default)
+                            - 3.0: Aggressive weighting (recommended if fits miss recent data)
+                            - 4.0+: Very aggressive weighting
+
         Returns:
             dict: Comprehensive results including:
                 - Best model and parameters
@@ -362,7 +474,10 @@ class DCAAnalyzer:
                 min_coverage=min_coverage,
                 max_error=max_error,
                 error_tolerance_factor=error_tolerance_factor,
-                trend_window=trend_window
+                trend_window=trend_window,
+                recent_weight_factor=recent_weight_factor,
+                recent_data_fraction=recent_data_fraction,
+                weight_exponent=weight_exponent
             )
         )
 
@@ -386,6 +501,15 @@ class DCAAnalyzer:
         t = complete_data['Years']
         q = complete_data['GAS_PRODUCTION_RATE_NORMALIZED']
 
+        # Calculate time-based weights for recent data emphasis
+        t_array = np.asarray(t)
+        q_array = np.asarray(q)
+        weights = calculate_time_weights(t_array, recent_weight_factor, recent_data_fraction, weight_exponent)
+
+        # Convert weights to sigma for curve_fit (lower sigma = higher weight)
+        # sigma = 1/sqrt(weight) so that weight appears in chi-squared
+        sigma = 1.0 / np.sqrt(weights)
+
         # Set decline curve parameters based on well type and life stage
         if is_unconventional:
             if t.max() <= 3:  # Early life of unconventional well
@@ -395,29 +519,40 @@ class DCAAnalyzer:
         else:
             b_bounds = (0, 0.5)  # Conservative bounds for conventional wells
 
-        # Fit all decline curve models using the fit_model method
+        # Fit all decline curve models using the fit_model method with weighted fitting
         models = {}
         try:
-            # Use the fit_model method instead of direct curve_fit
+            # Use the fit_model method with sigma for weighted fitting
             hyperbolic_params = self.models.fit_model(
-                t, q, 
+                t_array, q_array,
                 model_type='hyperbolic',
                 bounds=((0, 0, b_bounds[0]), (float('inf'), float('inf'), b_bounds[1])),
-                maxfev=5000
+                maxfev=5000,
+                sigma=sigma,
+                absolute_sigma=True
             )
-            
+
             # If b is very close to zero (< 0.01), use exponential model instead
             if hyperbolic_params[2] < 0.01:
                 print(f"B factor {hyperbolic_params[2]:.6f} is effectively zero, using exponential model")
-                exponential_params = self.models.fit_model(t, q, model_type='exponential', maxfev=5000)
+                exponential_params = self.models.fit_model(
+                    t_array, q_array, model_type='exponential', maxfev=5000,
+                    sigma=sigma, absolute_sigma=True
+                )
                 models['Exponential'] = (self.models.exponential, exponential_params)
             else:
                 models['Hyperbolic'] = (self.models.hyperbolic, hyperbolic_params)
-            
-            # Fit other models
-            harmonic_params = self.models.fit_model(t, q, model_type='harmonic', maxfev=5000)
-            exponential_params = self.models.fit_model(t, q, model_type='exponential', maxfev=5000)
-            
+
+            # Fit other models with weighted fitting
+            harmonic_params = self.models.fit_model(
+                t_array, q_array, model_type='harmonic', maxfev=5000,
+                sigma=sigma, absolute_sigma=True
+            )
+            exponential_params = self.models.fit_model(
+                t_array, q_array, model_type='exponential', maxfev=5000,
+                sigma=sigma, absolute_sigma=True
+            )
+
             if 'Hyperbolic' not in models:  # Only add if not already switched to exponential
                 models['Exponential'] = (self.models.exponential, exponential_params)
             models['Harmonic'] = (self.models.harmonic, harmonic_params)
@@ -695,13 +830,13 @@ class DCAAnalyzer:
     def analyze_well_list(self, well_list, **kwargs):
         """
         Analyze multiple wells and generate comprehensive summary statistics.
-        
+
         This method:
         1. Processes each well in the provided list
         2. Generates individual well analysis results
         3. Creates summary statistics
         4. Saves results to files
-        
+
         Args:
             well_list: List of well authorization numbers to analyze
             **kwargs: Additional parameters passed to perform_dca_analysis
@@ -710,10 +845,14 @@ class DCAAnalyzer:
                 - error_tolerance_factor: Controls error tolerance line slope
                 - trend_window: Window size for trend analysis
                 - mse_scale_factor: Scaling factor for MSE visualization
-                
+                - recent_weight_factor: Weight multiplier for recent data (default 1.5)
+                - recent_data_fraction: Fraction of data considered recent (default 0.15)
+                - weight_exponent: Power exponent for time-based weighting (default 2.0).
+                                  Use 3.0 or 4.0 for more aggressive recent data emphasis.
+
         Returns:
             pd.DataFrame: Summary statistics for all analyzed wells
-            
+
         Outputs:
             - Normal scale plots: results/normal_scale/
             - Log scale plots: results/log_scale/
@@ -745,7 +884,10 @@ class DCAAnalyzer:
                     max_error=kwargs.get('max_error', 0.1),
                     error_tolerance_factor=kwargs.get('error_tolerance_factor', 0.5),
                     trend_window=kwargs.get('trend_window', 5),
-                    mse_scale_factor=kwargs.get('mse_scale_factor', 1e3)
+                    mse_scale_factor=kwargs.get('mse_scale_factor', 1e3),
+                    recent_weight_factor=kwargs.get('recent_weight_factor', 1.5),
+                    recent_data_fraction=kwargs.get('recent_data_fraction', 0.15),
+                    weight_exponent=kwargs.get('weight_exponent', 2.0)
                 )
                 
                 param_sum = dca_results['parameter_summary']
