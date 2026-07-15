@@ -129,20 +129,39 @@ class DCAVisualizer:
             global_min_coverage = coverages[global_min_index]
             global_min_error = errors[global_min_index]
             max_coverage = max(coverages)
-            
-            # Add error tolerance line
-            tolerance_line_x = [global_min_coverage, max_coverage]
+
+            # Determine the tolerance line anchor using the same rule as the
+            # selection algorithm (improved_adaptive_dca_cutoff): when the global
+            # minimum uses less than 20% of the data, the line is anchored at the
+            # lowest-error point with at least 20% coverage.
+            anchor_index = global_min_index
+            if global_min_coverage < 0.20:
+                eligible = [i for i, cov in enumerate(coverages) if cov >= 0.20]
+                if eligible:
+                    anchor_index = min(eligible, key=lambda i: errors[i])
+            anchor_coverage = coverages[anchor_index]
+            anchor_error = errors[anchor_index]
+
+            # Add error tolerance line, drawn from the anchor the selection used
+            tolerance_line_x = [anchor_coverage, max_coverage]
             tolerance_line_y = [
-                global_min_error, 
-                global_min_error + (relative_slope * scale_factor) * (max_coverage - global_min_coverage)
+                anchor_error,
+                anchor_error + (relative_slope * scale_factor) * (max_coverage - anchor_coverage)
             ]
             plt.plot(tolerance_line_x, tolerance_line_y, 'g--', label='Error Tolerance Line')
-            
+
             # Highlight key points
-            plt.plot(best_coverage, best_error * scale_factor, marker='s', color='green', 
+            plt.plot(best_coverage, best_error * scale_factor, marker='s', color='green',
                      markersize=10, label='Chosen Point')
-            plt.plot(global_min_coverage, global_min_error, marker='*', color='black', 
+            plt.plot(global_min_coverage, global_min_error, marker='*', color='black',
                      markersize=12, label='Global Minimum')
+            if anchor_index != global_min_index:
+                plt.plot(anchor_coverage, anchor_error, marker='*', color='green',
+                         markersize=12, label='Tolerance Anchor (>=20% coverage)')
+                plt.annotate('TA', (anchor_coverage, anchor_error),
+                             xytext=(5, -20), textcoords='offset points',
+                             bbox=dict(boxstyle="round", fc="w", ec="0.5", alpha=0.9),
+                             arrowprops=dict(arrowstyle="->"))
             
             # Add annotations
             self._add_annotations(best_coverage, best_error, scale_factor, 
