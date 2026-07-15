@@ -48,7 +48,7 @@ class DeclineModels:
     def hyperbolic(t, qi, di, b):
         """
         Hyperbolic decline curve model - most general form of decline.
-        
+
         Args:
             t (array-like): Time values in years from start of analysis
             qi (float): Initial production rate
@@ -56,16 +56,19 @@ class DeclineModels:
             b (float): Hyperbolic exponent (0 < b < 1)
                       b=0 reduces to exponential
                       b=1 reduces to harmonic
-            
+
         Returns:
             array-like: Production rates at specified times
-            
+
         Notes:
             - Most common model for unconventional wells
             - b typically ranges from 0.3 to 1.5
             - Higher b values indicate slower decline
             - Requires careful terminal decline consideration
         """
+        # Handle edge case where b is very close to 0 (use exponential instead)
+        if np.abs(b) < 1e-6:
+            return qi * np.exp(-di * t)
         return qi / (np.abs((1 + b * di * t))**(1/b))
     
     @staticmethod
@@ -114,21 +117,24 @@ class DeclineModels:
     def hyperbolic_derivative(t, qi, di, b):
         """
         First derivative of hyperbolic decline curve.
-        
+
         Args:
             t (array-like): Time values in years
             qi (float): Initial production rate
             di (float): Initial decline rate
             b (float): Hyperbolic exponent
-            
+
         Returns:
             array-like: Instantaneous rate of change of production
-            
+
         Notes:
             - Used for calculating instantaneous decline rates
             - Important for decline rate transitions
             - Helps identify changes in decline behavior
         """
+        # Handle edge case where b is very close to 0 (use exponential derivative)
+        if np.abs(b) < 1e-6:
+            return -qi * di * np.exp(-di * t)
         return -(qi * di * (1 + b * di * t)**(-1 - 1/b))
     
     @staticmethod
@@ -175,17 +181,17 @@ class DeclineModels:
     def combined_decline_c1(t, qi, di, b, switch_time):
         """
         Combined decline model - transitions from hyperbolic to exponential.
-        
+
         Args:
             t (array-like): Time values in years
             qi (float): Initial production rate
             di (float): Initial decline rate
             b (float): Hyperbolic exponent
             switch_time (float): Time to switch from hyperbolic to exponential
-            
+
         Returns:
             array-like: Production rates incorporating regime change
-            
+
         Notes:
             - Models transition to terminal decline
             - Maintains continuity at switch point
@@ -194,17 +200,21 @@ class DeclineModels:
         """
         # Calculate initial hyperbolic decline
         hyp_decline = DeclineModels.hyperbolic(t, qi, di, b)
-        
+
         # Get rate at switch point for continuity
         exp_start_rate = np.interp(switch_time, t, hyp_decline)
-        
+
+        # Guard against division by zero
+        if exp_start_rate < 1e-10:
+            return hyp_decline  # Return hyperbolic if rate is essentially zero
+
         # Calculate matching exponential decline rate
         hyp_slope_at_switch = DeclineModels.hyperbolic_derivative(switch_time, qi, di, b)
         di_exp = -hyp_slope_at_switch / exp_start_rate  # Terminal decline rate
-        
+
         # Calculate exponential segment
         exp_decline = DeclineModels.exponential(t - switch_time, exp_start_rate, di_exp)
-        
+
         # Combine curves at switch point
         return np.where(t < switch_time, hyp_decline, exp_decline)
 

@@ -20,6 +20,11 @@ A comprehensive Python package for automated Decline Curve Analysis (DCA) of oil
 - **Well Type Detection**:
   - Automatic differentiation between conventional and unconventional wells
   - Customized analysis parameters based on well type
+- **Robust Curve Fitting**:
+  - Power-law time weighting to emphasize recent production behavior
+  - Flat-fit prevention during start date selection
+  - Counter-trend spike detection (e.g., workovers, recompletions)
+  - Hyperbolic-to-exponential terminal decline transition
 - **Comprehensive Error Metrics**:
   - MSE (Mean Squared Error)
   - MAE (Mean Absolute Error)
@@ -47,7 +52,7 @@ automatedDCA/
 │   ├── README.md               # Data documentation
 │   ├── extraction_summary.csv  # Summary of data extraction
 │   │
-│   ├── well_3899/             # Example well directory
+│   ├── well_2596/             # Example well directory
 │   │   ├── production.csv     # Production time series data
 │   │   ├── info.csv          # Well characteristics
 │   │   └── metadata.txt       # Well metadata
@@ -64,10 +69,14 @@ automatedDCA/
 │   ├── dca_analysis_summary.csv
 │   └── dca_analysis_summary.xlsx
 │
+├── tests/
+│   └── test_dca.py            # Unit tests
+│
 ├── requirements.txt           # Python package dependencies
 ├── extractWellData.ipynb      # Notebook for extracting data from database to CSV
-├── dca_analysis.ipynb         # Main notebook for database analysis
-└── dca_analysis_csv.ipynb     # Notebook for CSV-based analysis
+├── dcaAnalysis.ipynb          # Main notebook for database analysis
+├── dcaAnalysisCSV.ipynb       # Notebook for CSV-based analysis
+└── dca_parameter_extraction.ipynb  # Notebook for extracting fitted DCA parameters
 ```
 
 ## Installation
@@ -85,7 +94,25 @@ pip install -r requirements.txt
 
 ## Usage
 
-The package includes three Jupyter notebooks for different analysis scenarios:
+### Python API
+
+```python
+from src.dca.analysis import DCAAnalyzer
+from src.dca.data_loader import DCADataLoader
+
+loader = DCADataLoader("data")  # or a database URL, e.g. "mysql+pymysql://user:pass@host/db"
+analyzer = DCAAnalyzer(loader, time_period='Q')
+
+# Analyze a single well
+results = analyzer.perform_dca_analysis(well_authorization_number=2596)
+
+# Analyze multiple wells and generate summary outputs
+summary = analyzer.analyze_well_list([2596, 2035, 153])
+```
+
+### Notebooks
+
+The package includes Jupyter notebooks for different analysis scenarios:
 
 1. **dcaAnalysis.ipynb**: Main analysis notebook for working with database connections. This notebook:
    - Connects to a database source
@@ -101,6 +128,8 @@ The package includes three Jupyter notebooks for different analysis scenarios:
 
 3. **extractWellData.ipynb**: Utility notebook for extracting data from database to CSV format
 
+4. **dca_parameter_extraction.ipynb**: Utility notebook for extracting fitted DCA parameters into a summary table
+
 ### Analysis Parameters
 
 Key parameters that can be adjusted in the notebooks:
@@ -110,6 +139,23 @@ Key parameters that can be adjusted in the notebooks:
 - `error_tolerance_factor`: Factor for error tolerance calculation (default: 0.5)
 - `trend_window`: Window size for trend analysis (default: 5)
 - `mse_scale_factor`: Scale factor for MSE visualization (default: 1e3)
+- `recent_weight_factor`: Base weight multiplier for recent data (default: 1.5; set to 1.0 to disable time weighting)
+- `recent_data_fraction`: Fraction of the data treated as recent (default: 0.15)
+- `weight_exponent`: Power-law exponent controlling how strongly early data is downweighted (default: 2.0; use 3.0+ to emphasize recent data more aggressively)
+- `min_decline_rate`: Minimum acceptable decline rate during start date selection (default: auto-set by well type - 0.10/yr for unconventional, 0.05/yr for conventional)
+- `flat_fit_penalty`: Error penalty multiplier for fits below the minimum decline rate (default: 10.0)
+- `detect_spikes`: Detect and downweight recent production spikes that run counter to the decline trend (default: True)
+- `spike_threshold`: Standard deviations above the fitted trend for a point to be treated as a spike (default: 1.0; lower values detect smaller deviations)
+
+### Curve Fitting Methodology
+
+Model fitting uses a two-pass approach:
+
+1. **Pass 1**: Fit with uniform weights to establish an unbiased baseline trend
+2. **Spike detection**: Identify recent data points significantly above the baseline (counter-trend spikes from workovers, recompletions, or measurement anomalies)
+3. **Pass 2**: Refit with power-law time weights, with detected spikes effectively removed from the fit
+
+This ensures the fitted curve tracks recent production behavior without being distorted by short-lived production spikes.
 
 ### Error Analysis Methodology
 
@@ -122,6 +168,14 @@ The error vs data coverage analysis uses multiple error metrics, with MSE and RM
    - Minimizing error (primarily MSE)
    - Maximizing data coverage
    - Maintaining error within tolerance of the global minimum
+
+## Testing
+
+Run the unit tests from the repository root:
+
+```bash
+python tests/test_dca.py
+```
 
 ## Output Files
 

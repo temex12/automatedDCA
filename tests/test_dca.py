@@ -1,10 +1,10 @@
 """
-Unit tests for Auto-DCA revision changes.
+Unit tests for the Auto-DCA package.
 
 Tests cover:
-1. Updated preprocessing (less aggressive IQR filtering)
-2. Minimum decline rate enforcement
-3. Line plot visualization (visual verification in notebook)
+1. Data preprocessing (decline-aware IQR filtering, shutin removal, normalization)
+2. Decline curve models (hyperbolic, harmonic, exponential)
+3. Error metrics (SMAPE)
 """
 
 import unittest
@@ -20,8 +20,8 @@ from dca.utils import DataPreprocessor, MetricsCalculator
 from dca.models import DeclineModels
 
 
-class TestPreprocessingRevisions(unittest.TestCase):
-    """Test the revised preprocessing with less aggressive outlier removal."""
+class TestDataPreprocessing(unittest.TestCase):
+    """Test decline-aware preprocessing: outlier filtering and normalization."""
 
     def setUp(self):
         """Create synthetic declining production data for testing."""
@@ -64,7 +64,7 @@ class TestPreprocessingRevisions(unittest.TestCase):
         # Get the initial high value
         initial_high = self.production_data['GAS_PRODUCTION_RATE'].iloc[0]
 
-        # Process with new default settings (remove_upper_outliers=False)
+        # Process with default settings (remove_upper_outliers=False)
         processed = preprocessor.preprocess_data(self.production_data.copy())
 
         # The high initial value should be preserved
@@ -86,24 +86,24 @@ class TestPreprocessingRevisions(unittest.TestCase):
         processed_near_zero = (processed['GAS_PRODUCTION_RATE'] <= 0.01).sum()
         self.assertEqual(processed_near_zero, 0, "Shutin values should be removed")
 
-    def test_preserves_more_data_than_old_method(self):
-        """Test that new method preserves more data than aggressive IQR."""
+    def test_default_preserves_more_than_aggressive_filtering(self):
+        """Test that default settings preserve more data than aggressive IQR filtering."""
         preprocessor = DataPreprocessor()
 
-        # New method (default: remove_upper_outliers=False)
-        processed_new = preprocessor.preprocess_data(self.production_data.copy())
+        # Default settings (upper outliers preserved)
+        processed_default = preprocessor.preprocess_data(self.production_data.copy())
 
-        # Old method simulation (remove both upper and lower outliers)
-        processed_old = preprocessor.preprocess_data(
+        # Aggressive filtering (upper and lower outliers removed, tighter IQR bounds)
+        processed_aggressive = preprocessor.preprocess_data(
             self.production_data.copy(),
             remove_upper_outliers=True,
-            iqr_multiplier=1.5  # Original aggressive setting
+            iqr_multiplier=1.5
         )
 
-        # New method should preserve >= data points
+        # Default settings should preserve >= data points
         self.assertGreaterEqual(
-            len(processed_new), len(processed_old),
-            "New method should preserve at least as many data points"
+            len(processed_default), len(processed_aggressive),
+            "Default settings should preserve at least as many data points"
         )
 
     def test_normalization_works(self):
@@ -150,11 +150,11 @@ class TestPreprocessingRevisions(unittest.TestCase):
         )
 
 
-class TestMinimumDeclineRate(unittest.TestCase):
-    """Test that minimum decline rate enforcement works."""
+class TestDeclineModels(unittest.TestCase):
+    """Test the decline curve model equations."""
 
-    def test_decline_models_exist(self):
-        """Test that decline models are properly defined."""
+    def test_hyperbolic_model(self):
+        """Test hyperbolic decline model."""
         models = DeclineModels()
 
         # Test hyperbolic model

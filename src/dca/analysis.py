@@ -111,6 +111,76 @@ def calculate_time_weights(t, recent_weight_factor=1.5, recent_data_fraction=0.1
     return weights
 
 
+def detect_counter_trend_spikes(t, q, model_func, initial_params, spike_threshold=1.5,
+                                recent_fraction=0.3):
+    """
+    Detect data points that spike counter to the expected decline trend.
+
+    For decline curve analysis, we expect production to decrease over time.
+    Points that are significantly ABOVE the fitted trend (especially recent ones)
+    may represent operational events like workovers, recompletions, or measurement
+    anomalies. These counter-trend spikes can pull the fit upward and make it
+    flatter than it should be.
+
+    Args:
+        t: Array of time values
+        q: Array of production values (normalized)
+        model_func: The decline model function (e.g., hyperbolic)
+        initial_params: Initial fit parameters from first pass
+        spike_threshold: Number of standard deviations above trend to consider a spike
+                        (default 1.5). Lower values are more aggressive at detecting spikes.
+        recent_fraction: Fraction of data considered "recent" for spike detection
+                        (default 0.3 = last 30% of data). Only recent spikes are penalized.
+
+    Returns:
+        numpy.ndarray: Spike penalty factors (1.0 = no penalty, <1.0 = downweighted)
+    """
+    t = np.asarray(t)
+    q = np.asarray(q)
+    n_points = len(t)
+
+    if n_points < 6:
+        # Not enough points for reliable spike detection
+        return np.ones(n_points)
+
+    # Calculate predicted values from initial fit
+    q_pred = model_func(t, *initial_params)
+
+    # Calculate residuals (positive = actual above predicted = potential spike)
+    residuals = q - q_pred
+
+    # Calculate standard deviation of residuals
+    residual_std = np.std(residuals)
+
+    if residual_std < 1e-10:
+        # No variation, no spikes to detect
+        return np.ones(n_points)
+
+    # Normalize residuals
+    normalized_residuals = residuals / residual_std
+
+    # Determine which points are "recent"
+    t_range = t.max() - t.min()
+    recent_threshold_time = t.max() - (t_range * recent_fraction)
+    is_recent = t >= recent_threshold_time
+
+    # Initialize penalty factors (1.0 = no penalty)
+    spike_penalties = np.ones(n_points)
+
+    # Detect and penalize counter-trend spikes in recent data
+    # A spike is a point significantly ABOVE the trend (positive residual)
+    for i in range(n_points):
+        if is_recent[i] and normalized_residuals[i] > spike_threshold:
+            # This is a counter-trend spike - calculate penalty
+            # Penalty increases with how far above threshold the point is
+            excess = normalized_residuals[i] - spike_threshold
+            # Penalty factor: reduce weight by factor based on excess
+            # e.g., if excess=1.0, penalty=0.5; if excess=2.0, penalty=0.33
+            spike_penalties[i] = 1.0 / (1.0 + excess)
+
+    return spike_penalties
+
+
 def calculate_remaining_reserves(forecast_df, production_end_date, economic_limit_daily, days_in_period):
     """
     Calculate remaining reserves using only production after the historical data ends.
@@ -260,7 +330,8 @@ class DCAAnalyzer:
                                               min_coverage=0.3, max_error=0.1,
                                               error_tolerance_factor=0.1, trend_window=5,
                                               recent_weight_factor=1.5, recent_data_fraction=0.15,
-                                              weight_exponent=2.0):
+                                              weight_exponent=2.0, min_decline_rate=0.05,
+                                              flat_fit_penalty=10.0):
         """
         Detect significant changes in production data using a year-based sliding window approach.
         This method helps identify the optimal starting point for DCA analysis by:
@@ -282,45 +353,50 @@ class DCAAnalyzer:
             weight_exponent: Power exponent for weight calculation (default 2.0).
                             Higher values = more aggressive downweighting of early data.
                             Use 3.0 or 4.0 if fits don't match recent data well.
+            min_decline_rate: Minimum acceptable decline rate (Di) during start date selection
+                             (default 0.05 = 5% per year). Fits with Di below this threshold
+                             receive an error penalty to prevent selection of flat-fit start dates.
+            flat_fit_penalty: Multiplier for the error penalty applied to flat fits (default 10.0).
+                             Higher values more strongly discourage flat fits.
 
         Returns:
             tuple: (best_start_date, results, relative_slope, best_coverage, best_error)
         """
         production_data = production_data.sort_values('ZONE_PROD_PERIOD')
-        
+
         # Drop rows with missing dates to ensure valid calculations
         production_data = production_data.dropna(subset=['ZONE_PROD_PERIOD'])
         if production_data.empty:
             raise ValueError("Production data is empty or has no valid 'ZONE_PROD_PERIOD' values.")
-        
+
         start_date = production_data['ZONE_PROD_PERIOD'].min()
         end_date = production_data['ZONE_PROD_PERIOD'].max()
-        
+
         if pd.isnull(start_date) or pd.isnull(end_date):
             raise ValueError("Missing start or end date in production data.")
-        
+
         total_years = (end_date - start_date).days / 365.25
         if np.isnan(total_years) or total_years <= 0:
             raise ValueError("Invalid total years calculated from production data.")
-        
+
         # Ensure that max_years is set correctly
         max_years = min(int(total_years), max_years)
-        
+
         results = []
-        
+
         # Test different time windows
         for years_back in range(min_years, max_years + 1):
             current_start_date = end_date - pd.DateOffset(years=years_back)
             subset_data = production_data[production_data['ZONE_PROD_PERIOD'] >= current_start_date]
-            
+
             if len(subset_data) < 4:  # Ensure enough data points for fitting
                 continue
-            
+
             # Preprocess the subset
             subset_data = self.preprocessor.preprocess_data(subset_data)
             t = subset_data['Years']
             q = subset_data['GAS_PRODUCTION_RATE_NORMALIZED']
-            
+
             # Fit all decline curve models
             try:
                 # Calculate time-based weights for recent data emphasis
@@ -341,44 +417,64 @@ class DCAAnalyzer:
 
                 # Calculate weighted errors for each model
                 errors = []
+                decline_rates = []
                 for name, (func, params) in models_local.items():
                     y_pred = func(t_array, *params)
                     # Weighted MSE: mean of weight * (y - y_pred)^2
                     weighted_squared_errors = weights * (np.asarray(q) - y_pred) ** 2
                     error = np.mean(weighted_squared_errors)
                     errors.append(error)
-                
+
+                    # Extract decline rate (Di is the second parameter)
+                    di = params[1]
+                    decline_rates.append(di)
+
                 # Store results using the best model's error
                 min_error = min(errors)
+                best_di = decline_rates[errors.index(min_error)]
                 data_coverage = len(subset_data) / len(production_data)
-                
+
+                # Apply penalty for flat fits (low decline rate)
+                # This prevents the algorithm from selecting start dates that produce
+                # nearly horizontal fits when there's clearly declining production data.
+                adjusted_error = min_error
+                if best_di < min_decline_rate:
+                    # Penalty increases as decline rate decreases below threshold
+                    # penalty = flat_fit_penalty * (min_decline_rate - di) / min_decline_rate
+                    # This makes the error proportionally higher for flatter fits
+                    penalty_factor = 1.0 + flat_fit_penalty * (min_decline_rate - best_di) / min_decline_rate
+                    adjusted_error = min_error * penalty_factor
+
                 results.append({
                     'start_date': current_start_date,
-                    'error': min_error,
+                    'error': adjusted_error,
+                    'raw_error': min_error,
+                    'decline_rate': best_di,
                     'data_coverage': data_coverage
                 })
-                
+
             except RuntimeError:
                 continue  # Skip if curve fitting fails
-        
+
         # Find optimal cutoff point
         best_coverage, best_error, best_start_date, relative_slope = self.improved_adaptive_dca_cutoff(
             results, min_coverage, max_error, error_tolerance_factor, trend_window
         )
-        
+
         if best_start_date is None:
             print("No suitable cutoff found. Using default best error approach.")
             best_result = min(results, key=lambda x: x['error'])
             best_start_date = best_result['start_date']
             best_coverage = best_result['data_coverage']
             best_error = best_result['error']
-        
+
         return best_start_date, results, relative_slope, best_coverage, best_error
 
     def perform_dca_analysis(self, well_authorization_number, min_coverage=0.3, max_error=0.1,
                              error_tolerance_factor=0.1, trend_window=5, mse_scale_factor=1e3,
                              recent_weight_factor=1.5, recent_data_fraction=0.15,
-                             weight_exponent=2.0):
+                             weight_exponent=2.0, min_decline_rate=None, flat_fit_penalty=10.0,
+                             detect_spikes=True, spike_threshold=1.0):
         """
         Performs comprehensive Decline Curve Analysis for a given well.
 
@@ -408,6 +504,22 @@ class DCAAnalyzer:
                             - 2.0: Moderate weighting (default)
                             - 3.0: Aggressive weighting (recommended if fits miss recent data)
                             - 4.0+: Very aggressive weighting
+            min_decline_rate: Minimum acceptable decline rate (Di) during start date selection.
+                             Default: None (auto-set based on well type: 0.10 for unconventional,
+                             0.05 for conventional). Fits with Di below this threshold receive
+                             an error penalty to prevent selection of flat-fit start dates.
+            flat_fit_penalty: Multiplier for the error penalty applied to flat fits (default 10.0).
+                             Higher values more strongly discourage flat fits.
+            detect_spikes: Whether to detect and downweight counter-trend spikes (default True).
+                          When recent data spikes upward against the decline trend (e.g., from
+                          workovers), this can cause fits to be flatter than expected. Enabling
+                          spike detection identifies these points and reduces their influence.
+            spike_threshold: Number of standard deviations above trend to consider a spike
+                            (default 1.0). Lower values are more aggressive at detecting spikes.
+                            - 1.5: Conservative (only detects large spikes)
+                            - 1.0: Moderate (default, good balance)
+                            - 0.75: Aggressive (detects smaller deviations)
+                            - 0.5: Very aggressive (may over-correct)
 
         Returns:
             dict: Comprehensive results including:
@@ -420,17 +532,23 @@ class DCAAnalyzer:
         """
         # Determine well type and set appropriate parameters
         is_unconventional = self._get_well_type(well_authorization_number)
-        
+
         if is_unconventional:
             decline_threshold = 0.15  # 15% for unconventional wells
             min_switch_time = 5  # Longer minimum time for unconventional wells
             max_switch_time = 15  # Longer maximum time for unconventional wells
             well_character = 'Unconventional'
+            # Unconventional wells typically have higher initial decline rates
+            default_min_decline_rate = 0.10  # 10% per year
         else:
             decline_threshold = 0.05  # 5% for conventional wells
             min_switch_time = 2  # Shorter minimum time for conventional wells
             max_switch_time = 10  # Shorter maximum time for conventional wells
             well_character = 'Conventional'
+            default_min_decline_rate = 0.05  # 5% per year
+
+        # Use provided min_decline_rate or default based on well type
+        effective_min_decline_rate = min_decline_rate if min_decline_rate is not None else default_min_decline_rate
 
         # Load production data
         if self.using_loader:
@@ -477,7 +595,9 @@ class DCAAnalyzer:
                 trend_window=trend_window,
                 recent_weight_factor=recent_weight_factor,
                 recent_data_fraction=recent_data_fraction,
-                weight_exponent=weight_exponent
+                weight_exponent=weight_exponent,
+                min_decline_rate=effective_min_decline_rate,
+                flat_fit_penalty=flat_fit_penalty
             )
         )
 
@@ -506,10 +626,6 @@ class DCAAnalyzer:
         q_array = np.asarray(q)
         weights = calculate_time_weights(t_array, recent_weight_factor, recent_data_fraction, weight_exponent)
 
-        # Convert weights to sigma for curve_fit (lower sigma = higher weight)
-        # sigma = 1/sqrt(weight) so that weight appears in chi-squared
-        sigma = 1.0 / np.sqrt(weights)
-
         # Set decline curve parameters based on well type and life stage
         if is_unconventional:
             if t.max() <= 3:  # Early life of unconventional well
@@ -519,14 +635,69 @@ class DCAAnalyzer:
         else:
             b_bounds = (0, 0.5)  # Conservative bounds for conventional wells
 
+        # Two-pass fitting with optional spike detection
+        # Pass 1: Initial fit with UNIFORM weights to establish baseline trend
+        # Pass 2: Detect counter-trend spikes and refit with power-law weights minus spikes
+
         # Fit all decline curve models using the fit_model method with weighted fitting
         models = {}
         try:
-            # Use the fit_model method with sigma for weighted fitting
+            # PASS 1: Initial fit with UNIFORM weights to get baseline trend
+            # This prevents the initial fit from being pulled by recent spikes
+            uniform_sigma = np.ones(len(t_array))
+
+            # Constrain Qi to reasonable bounds in normalized space
+            # Data is normalized to max=1.0, so Qi should be close to 1.0
+            # Allow only slight flexibility (1.05) to ensure fit passes through data
+            qi_upper_bound = 1.05
+
+            baseline_params = self.models.fit_model(
+                t_array, q_array,
+                model_type='hyperbolic',
+                bounds=((0, 0, b_bounds[0]), (qi_upper_bound, float('inf'), b_bounds[1])),
+                maxfev=5000,
+                sigma=uniform_sigma,
+                absolute_sigma=True
+            )
+
+            # PASS 2: Spike detection and final fit with adjusted weights
+            if detect_spikes and len(t_array) >= 6:
+                # Detect counter-trend spikes using the BASELINE fit (not biased by power-law)
+                spike_penalties = detect_counter_trend_spikes(
+                    t_array, q_array,
+                    self.models.hyperbolic,
+                    baseline_params,
+                    spike_threshold=spike_threshold,
+                    recent_fraction=0.3
+                )
+
+                # Check if any spikes were detected
+                spikes_detected = np.any(spike_penalties < 1.0)
+                if spikes_detected:
+                    n_spikes = np.sum(spike_penalties < 1.0)
+                    print(f"Detected {n_spikes} counter-trend spike(s) in recent data, adjusting weights")
+
+                    # For spike points: set weight to very low value (effectively remove from fitting)
+                    # For non-spike points: use normal power-law weights
+                    adjusted_weights = weights.copy()
+                    for i in range(len(spike_penalties)):
+                        if spike_penalties[i] < 1.0:
+                            # Set spike weight to minimum (0.01) - effectively removes it
+                            adjusted_weights[i] = 0.01
+
+                    sigma = 1.0 / np.sqrt(np.maximum(adjusted_weights, 0.01))
+                else:
+                    # No spikes detected, use normal power-law weights
+                    sigma = 1.0 / np.sqrt(weights)
+            else:
+                # Spike detection disabled, use normal power-law weights
+                sigma = 1.0 / np.sqrt(weights)
+
+            # Final fit with adjusted weights
             hyperbolic_params = self.models.fit_model(
                 t_array, q_array,
                 model_type='hyperbolic',
-                bounds=((0, 0, b_bounds[0]), (float('inf'), float('inf'), b_bounds[1])),
+                bounds=((0, 0, b_bounds[0]), (qi_upper_bound, float('inf'), b_bounds[1])),
                 maxfev=5000,
                 sigma=sigma,
                 absolute_sigma=True
@@ -556,7 +727,7 @@ class DCAAnalyzer:
             if 'Hyperbolic' not in models:  # Only add if not already switched to exponential
                 models['Exponential'] = (self.models.exponential, exponential_params)
             models['Harmonic'] = (self.models.harmonic, harmonic_params)
-        
+
         except Exception as e:
             print(f"Error during model fitting: {str(e)}")
             raise
@@ -793,7 +964,11 @@ class DCAAnalyzer:
             hyp_decline = self.models.hyperbolic(t_array, qi, di, b)
             exp_start_rate = np.interp(switch_time, t_array, hyp_decline)
             hyp_slope_at_switch = self.models.hyperbolic_derivative(switch_time, qi, di, b)
-            di_exp = -hyp_slope_at_switch / exp_start_rate
+            # Guard against division by zero
+            if exp_start_rate < 1e-10:
+                di_exp = di  # Use original decline rate if start rate is essentially zero
+            else:
+                di_exp = -hyp_slope_at_switch / exp_start_rate
             
             exp_start_rate_denorm = exp_start_rate * complete_data['GAS_PRODUCTION_RATE'].max()
             t_after_switch = t_forecast[t_forecast >= switch_time]
@@ -849,6 +1024,11 @@ class DCAAnalyzer:
                 - recent_data_fraction: Fraction of data considered recent (default 0.15)
                 - weight_exponent: Power exponent for time-based weighting (default 2.0).
                                   Use 3.0 or 4.0 for more aggressive recent data emphasis.
+                - min_decline_rate: Minimum acceptable decline rate during start date selection.
+                                   Prevents selection of flat-fit start dates.
+                - flat_fit_penalty: Multiplier for error penalty on flat fits (default 10.0).
+                - detect_spikes: Whether to detect and downweight counter-trend spikes (default True).
+                - spike_threshold: Std devs above trend to consider a spike (default 1.0).
 
         Returns:
             pd.DataFrame: Summary statistics for all analyzed wells
@@ -887,7 +1067,11 @@ class DCAAnalyzer:
                     mse_scale_factor=kwargs.get('mse_scale_factor', 1e3),
                     recent_weight_factor=kwargs.get('recent_weight_factor', 1.5),
                     recent_data_fraction=kwargs.get('recent_data_fraction', 0.15),
-                    weight_exponent=kwargs.get('weight_exponent', 2.0)
+                    weight_exponent=kwargs.get('weight_exponent', 2.0),
+                    min_decline_rate=kwargs.get('min_decline_rate', None),
+                    flat_fit_penalty=kwargs.get('flat_fit_penalty', 10.0),
+                    detect_spikes=kwargs.get('detect_spikes', True),
+                    spike_threshold=kwargs.get('spike_threshold', 1.0)
                 )
                 
                 param_sum = dca_results['parameter_summary']
