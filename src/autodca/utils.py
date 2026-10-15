@@ -123,7 +123,7 @@ class MetricsCalculator:
         return pd.Series(decline_rates).rolling(
             window=window, 
             center=True
-        ).mean().fillna(method='bfill').fillna(method='ffill').values
+        ).mean().bfill().ffill().values
 
 
 class DataPreprocessor:

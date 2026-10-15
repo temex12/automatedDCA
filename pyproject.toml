@@ -1,0 +1,44 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "autodca"
+dynamic = ["version"]
+description = "Automated decline curve analysis for oil and gas production forecasting"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.8"
+authors = [{ name = "Temesgen Mikael Abraha" }]
+keywords = ["decline curve analysis", "production forecasting", "oil and gas", "reserves"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering",
+]
+dependencies = [
+    "numpy>=1.24",
+    "pandas>=1.5",
+    "scipy>=1.9",
+    "matplotlib>=3.6",
+    "scikit-learn>=1.3",
+    "sqlalchemy>=1.4",
+    "openpyxl>=3.0",
+]
+
+[project.optional-dependencies]
+mysql = ["pymysql>=1.1"]
+ml = ["xgboost>=2.0", "tensorflow>=2.13", "joblib>=1.3"]
+
+[project.urls]
+Repository = "https://github.com/temex12/automatedDCA"
+
+[tool.hatch.version]
+path = "src/autodca/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/autodca"]
+
+[tool.hatch.build.targets.sdist]
+include = ["/src", "/tests", "/README.md", "/LICENSE"]

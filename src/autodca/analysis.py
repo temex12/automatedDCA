@@ -770,7 +770,7 @@ class DCAAnalyzer:
             'Date': pd.date_range(
                 start=complete_data['ZONE_PROD_PERIOD'].min(), 
                 periods=len(t_forecast), 
-                freq='Q'
+                freq=pd.offsets.QuarterEnd(startingMonth=12)
             ),
             'GAS_PRODUCTION_RATE': None  # Placeholder; will be filled later
         })

@@ -16,8 +16,8 @@ from pathlib import Path
 # Add src to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
 
-from dca.utils import DataPreprocessor, MetricsCalculator
-from dca.models import DeclineModels
+from autodca.utils import DataPreprocessor, MetricsCalculator
+from autodca.models import DeclineModels
 
 
 class TestDataPreprocessing(unittest.TestCase):
@@ -49,7 +49,7 @@ class TestDataPreprocessing(unittest.TestCase):
         rates[0] = 120  # Slightly higher than expected initial rate
         rates[1] = 115
 
-        dates = pd.date_range(start='2010-01-01', periods=n_points, freq='Q')
+        dates = pd.date_range(start='2010-01-01', periods=n_points, freq=pd.offsets.QuarterEnd(startingMonth=12))
 
         self.production_data = pd.DataFrame({
             'ZONE_PROD_PERIOD': dates,

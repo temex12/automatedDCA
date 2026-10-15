@@ -1,6 +1,6 @@
 # Automated Decline Curve Analysis (AutoDCA)
 
-A comprehensive Python package for automated Decline Curve Analysis (DCA) of oil and gas well production data. This tool provides robust capabilities for analyzing production decline trends, forecasting future production, and generating detailed visualization reports.
+A comprehensive Python package for automated Decline Curve Analysis (DCA) of oil and gas well production data. This tool provides robust capabilities for analyzing production decline trends, forecasting future production, and generating detailed visualization reports. It is distributed as the Python package `autodca`.
 
 ## Features
 
@@ -38,10 +38,8 @@ A comprehensive Python package for automated Decline Curve Analysis (DCA) of oil
 automatedDCA/
 │
 ├── src/
-│   ├── __init__.py
-│   │
-│   └── dca/
-│       ├── __init__.py
+│   └── autodca/                 # The autodca package
+│       ├── __init__.py          # Public API and package version
 │       ├── analysis.py          # DCAAnalyzer class
 │       ├── data_loader.py       # DCADataLoader class
 │       ├── models.py            # DeclineModels class
@@ -72,7 +70,8 @@ automatedDCA/
 ├── tests/
 │   └── test_dca.py            # Unit tests
 │
-├── requirements.txt           # Python package dependencies
+├── pyproject.toml             # Package metadata and dependencies
+├── requirements.txt           # Exact package versions used for the paper results
 ├── LICENSE                    # MIT License
 ├── extractWellData.ipynb      # Notebook for extracting data from database to CSV
 ├── dcaAnalysis.ipynb          # Main notebook for database analysis
@@ -83,38 +82,77 @@ automatedDCA/
 
 ## Installation
 
-1. Clone the repository:
+Install the package from GitHub:
+```bash
+pip install "autodca @ git+https://github.com/temex12/automatedDCA.git"
+```
+
+Optional extras:
+- `mysql`: the PyMySQL driver, needed to read data from a MySQL database
+- `ml`: XGBoost, TensorFlow and joblib, needed by `MLComparison.ipynb`
+
+```bash
+pip install "autodca[mysql] @ git+https://github.com/temex12/automatedDCA.git"
+```
+
+To use the notebooks and run the tests, clone the repository and install it in editable mode:
 ```bash
 git clone https://github.com/temex12/automatedDCA.git
 cd automatedDCA
+pip install -e ".[mysql]"
 ```
 
-2. Install required packages:
-```bash
-pip install -r requirements.txt
-```
+`requirements.txt` lists the exact package versions used to produce the results in the paper. The package has been tested with Python 3.8 and 3.12. In an environment that already has pandas older than 2.0, keep SQLAlchemy at version 1.4, because those pandas versions do not support SQLAlchemy 2.
 
 ## Usage
 
-### Python API
+### Quick start
+
+The `data/` folder of the repository contains example wells in the CSV format described under [Data Requirements](#data-requirements). Run the following from the root of a clone:
 
 ```python
-from src.dca.analysis import DCAAnalyzer
-from src.dca.data_loader import DCADataLoader
+from autodca import DCAAnalyzer, DCADataLoader
 
 loader = DCADataLoader("data")  # or a database URL, e.g. "mysql+pymysql://user:pass@host/db"
-analyzer = DCAAnalyzer(loader, time_period='Q')
+analyzer = DCAAnalyzer(loader, time_period="Q")
 
 # Analyze a single well
 results = analyzer.perform_dca_analysis(well_authorization_number=2596)
+params = results["parameter_summary"]
+print(results["best_model"], results["best_start_date"].date())
+print(f"qi = {params['q_model']:.1f} E3M3/day, Di = {params['d_model']:.3f} per year, b = {params['b_model']}")
+print(f"EUR = {results['eur']:,.0f} E3M3")
 
-# Analyze multiple wells and generate summary outputs
+# Analyze several wells; returns a summary table and writes summary files to results/
 summary = analyzer.analyze_well_list([2596, 2035, 153])
+```
+
+### Results
+
+`perform_dca_analysis` returns a dictionary. Its main entries are:
+
+- `best_model`: the selected decline model (`Hyperbolic`, `Harmonic` or `Exponential`)
+- `best_start_date`: the selected start of the decline period
+- `parameter_summary`: the fitted parameters in field units, including `q_model` (initial rate, E3M3/day), `d_model` (initial decline rate, per year) and `b_model` (b-factor), and the terminal decline parameters
+- `switch_time`: the time of the switch to terminal (exponential) decline, in years from the start of the decline period
+- `cumulative_production`, `remaining_reserves` and `eur`: volumes in E3M3
+- `forecast_df`: the fitted and forecast rates by quarter (`GAS_PRODUCTION_RATE`, E3M3/day)
+- `production_data`: the quarterly production used in the analysis
+- `full_mae`, `full_rmse`, `full_mape` and `full_smape`: the errors of the fitted curve over the decline period
+
+Production is aggregated to quarters by default (`time_period="Q"`). Volumes are in E3M3 (thousand cubic metres) and rates in E3M3/day.
+
+Each call to `perform_dca_analysis` also saves four plots of the well in the `results/` folder of the working directory (see [Output Files](#output-files)). To save the plots in another folder, replace the analyzer's visualizer:
+
+```python
+from autodca import DCAVisualizer
+
+analyzer.visualizer = DCAVisualizer(output_dir="my_results")
 ```
 
 ### Notebooks
 
-The package includes Jupyter notebooks for different analysis scenarios:
+The repository includes Jupyter notebooks for different analysis scenarios. The notebooks add `src/` to the Python path, so they run from a clone of the repository with or without the package installed.
 
 1. **dcaAnalysis.ipynb**: Main analysis notebook for working with database connections. This notebook:
    - Connects to a database source
@@ -136,7 +174,7 @@ The package includes Jupyter notebooks for different analysis scenarios:
    - Hides the most recent 15%, 25%, 50% or 75% of each well's quarterly history and scores all methods on the same hidden quarters
    - Trains the machine learning models on other Montney horizontal gas wells, using only production recorded before each forecast start date
    - Reads the database URL from the `AUTODCA_DB_URL` environment variable
-   - Requires `xgboost`, `tensorflow` and `joblib` in addition to the packages in `requirements.txt` (the results were produced with xgboost 2.1.4, TensorFlow 2.13.0 and joblib 1.4.2)
+   - Requires the `ml` extra (`pip install -e ".[ml]"`); the results were produced with xgboost 2.1.4, TensorFlow 2.13.0 and joblib 1.4.2
    - Writes its results to `ml_comparison_results/`
 
 ### Analysis Parameters
@@ -193,6 +231,7 @@ The analysis generates the following output files in the `results` directory:
 - `normal_scale/`: Production forecasts in normal scale
 - `log_scale/`: Production forecasts in log scale
 - `error_analysis/`: Error analysis plots showing MSE vs data coverage
+- `rate_vs_cumulative/`: Production rate vs cumulative production plots
 - `model_distribution.png`: Distribution of best-fitting models
 - `well_type_distribution.png`: Distribution of well types
 - `error_metrics_heatmap.png`: Heatmap visualization of normalized error metrics

@@ -56,7 +56,7 @@ class DCAVisualizer:
         self._create_output_directories()
         
         # Set default plotting parameters
-        plt.style.use('seaborn')  # Clean, modern style
+        plt.style.use('seaborn-v0_8')  # Clean, modern style
         self.default_figsize = (16, 8)  # Widescreen format
         self.dpi = 300  # High resolution output
     
