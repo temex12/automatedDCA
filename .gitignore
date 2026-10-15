@@ -47,6 +47,7 @@ ENV/
 # Generated files and directories
 results/*
 !results/dca_parameters.csv
+ml_comparison_results/
 
 # Images and data files
 *.png

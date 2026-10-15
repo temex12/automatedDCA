@@ -73,10 +73,12 @@ automatedDCA/
 │   └── test_dca.py            # Unit tests
 │
 ├── requirements.txt           # Python package dependencies
+├── LICENSE                    # MIT License
 ├── extractWellData.ipynb      # Notebook for extracting data from database to CSV
 ├── dcaAnalysis.ipynb          # Main notebook for database analysis
 ├── dcaAnalysisCSV.ipynb       # Notebook for CSV-based analysis
-└── dca_parameter_extraction.ipynb  # Notebook for extracting fitted DCA parameters
+├── dca_parameter_extraction.ipynb  # Notebook for extracting fitted DCA parameters
+└── MLComparison.ipynb         # Comparison with machine learning forecasts on hidden production
 ```
 
 ## Installation
@@ -129,6 +131,13 @@ The package includes Jupyter notebooks for different analysis scenarios:
 3. **extractWellData.ipynb**: Utility notebook for extracting data from database to CSV format
 
 4. **dca_parameter_extraction.ipynb**: Utility notebook for extracting fitted DCA parameters into a summary table
+
+5. **MLComparison.ipynb**: Comparison of Auto-DCA with XGBoost, random forest and LSTM forecasts on 40 horizontal Montney wells. This notebook:
+   - Hides the most recent 15%, 25%, 50% or 75% of each well's quarterly history and scores all methods on the same hidden quarters
+   - Trains the machine learning models on other Montney horizontal gas wells, using only production recorded before each forecast start date
+   - Reads the database URL from the `AUTODCA_DB_URL` environment variable
+   - Requires `xgboost`, `tensorflow` and `joblib` in addition to the packages in `requirements.txt` (the results were produced with xgboost 2.1.4, TensorFlow 2.13.0 and joblib 1.4.2)
+   - Writes its results to `ml_comparison_results/`
 
 ### Analysis Parameters
 
@@ -205,6 +214,8 @@ Required tables and columns for database analysis:
   - WA
   - HZ_FLAG (for well type detection)
 
+`MLComparison.ipynb` also uses `FORMTN_CODE` in `bc_total_production`, `FLUID` and `FORM` in `well_index`, and the table `well_authorizations_issued` (WA_NUM, NAD_83_LATITUDE, NAD_83_LONGITUDE).
+
 ### CSV Structure
 Required files in each well directory:
 - `production.csv`:
@@ -215,3 +226,7 @@ Required files in each well directory:
   - HZ_FLAG
 
 The analysis supports both database connections and CSV files, with identical functionality and outputs regardless of the data source used. The CSV-based approach is particularly useful for offline analysis or when database access is restricted.
+
+## License
+
+This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.
